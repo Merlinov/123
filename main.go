@@ -29,12 +29,12 @@ const (
 	WindowWidth   = 900
 	WindowHeight  = 700
 	WatchInterval = 5 * time.Second
-	  StatusStopped = "Остановлен" 
-    StatusRunning = "Запущен"
-    
-    // Тексты кнопок
-    ButtonStart = "Start"
-    ButtonStop  = "Stop"
+	StatusStopped = "Остановлен"
+	StatusRunning = "Запущен"
+
+	// Тексты кнопок
+	ButtonStart = "Start"
+	ButtonStop  = "Stop"
 )
 
 type SourceControl struct {
@@ -92,7 +92,16 @@ func (am *AppManager) run() {
 	am.myWindow.ShowAndRun()
 }
 
-// ========== ВСЕ ОСТАЛЬНЫЕ МЕТОДЫ ИЗ ТВОЕГО ОРИГИНАЛЬНОГО КОДА ==========
+func (am *AppManager) updateSourceStatus(control *SourceControl, isRunning bool) {
+	sourceName := control.Source.Name
+	if isRunning {
+		control.StatusLabel.SetText(fmt.Sprintf("%s: %s", sourceName, StatusRunning))
+		control.RunStopBtn.SetText(ButtonStop)
+	} else {
+		control.StatusLabel.SetText(fmt.Sprintf("%s: %s", sourceName, StatusStopped))
+		control.RunStopBtn.SetText(ButtonStart)
+	}
+}
 
 // initializeUI создает базовый интерфейс, который всегда доступен
 func (am *AppManager) initializeUI() {
@@ -307,12 +316,10 @@ func (am *AppManager) configWatcher() {
 func (am *AppManager) toggleSource(control *SourceControl) {
 	if control.Runner.IsRunning() {
 		control.Runner.Stop()
-		control.StatusLabel.SetText(fmt.Sprintf("%s: %s", control.Source.Name, StatusStopped))
-		control.RunStopBtn.SetText(ButtonStart)
+		am.updateSourceStatus(control, false)
 	} else {
 		control.Runner.Start(am.cfg.LogMode)
-		control.StatusLabel.SetText(fmt.Sprintf("%s: %s", control.Source.Name, StatusRunning))
-control.RunStopBtn.SetText(ButtonStop)
+		am.updateSourceStatus(control, true)
 	}
 }
 
