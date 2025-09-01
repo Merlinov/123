@@ -29,6 +29,12 @@ const (
 	WindowWidth   = 900
 	WindowHeight  = 700
 	WatchInterval = 5 * time.Second
+	  StatusStopped = "Остановлен" 
+    StatusRunning = "Запущен"
+    
+    // Тексты кнопок
+    ButtonStart = "Start"
+    ButtonStop  = "Stop"
 )
 
 type SourceControl struct {
@@ -301,12 +307,12 @@ func (am *AppManager) configWatcher() {
 func (am *AppManager) toggleSource(control *SourceControl) {
 	if control.Runner.IsRunning() {
 		control.Runner.Stop()
-		control.StatusLabel.SetText(fmt.Sprintf("%s: Остановлен", control.Source.Name))
-		control.RunStopBtn.SetText("Start")
+		control.StatusLabel.SetText(fmt.Sprintf("%s: %s", control.Source.Name, StatusStopped))
+		control.RunStopBtn.SetText(ButtonStart)
 	} else {
 		control.Runner.Start(am.cfg.LogMode)
-		control.StatusLabel.SetText(fmt.Sprintf("%s: Запущен", control.Source.Name))
-		control.RunStopBtn.SetText("Stop")
+		control.StatusLabel.SetText(fmt.Sprintf("%s: %s", control.Source.Name, StatusRunning))
+control.RunStopBtn.SetText(ButtonStop)
 	}
 }
 
@@ -326,8 +332,8 @@ func (am *AppManager) stopAllSources() {
 	for _, control := range am.sourceControls {
 		if control.Runner.IsRunning() {
 			control.Runner.Stop()
-			control.StatusLabel.SetText(fmt.Sprintf("%s: Остановлен", control.Source.Name))
-			control.RunStopBtn.SetText("Start")
+			control.StatusLabel.SetText(fmt.Sprintf("%s: %s", control.Source.Name, StatusStopped))
+			control.RunStopBtn.SetText(ButtonStart)
 		}
 	}
 }
