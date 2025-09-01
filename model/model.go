@@ -484,14 +484,11 @@ type Data_TG5_Hour struct {
 	Fltv99Offs422  float32 `idTag:"376"` // Вибрация подшипника №6 вертикальная ср.час
 	Fltv100Offs426 float32 `idTag:"377"` // Вибрация подшипника №6 поперечная ср.час
 	Fltv101Offs430 float32 `idTag:"378"` // Вибрация подшипника №6 осевая ср.час
-	Fltv102Offs434 float32              // Час (без idTag)
-	Fltv103Offs438 float32              // Минута (без idTag)
-	Fltv104Offs442 float32              // Секунда (без idTag)
+	Fltv102Offs434 float32 // Час (без idTag)
+	Fltv103Offs438 float32 // Минута (без idTag)
+	Fltv104Offs442 float32 // Секунда (без idTag)
 	B14            uint8
 	Fltv105Offs447 float32 // Год (без idTag)
 	Fltv106Offs451 float32 // Месяц (без idTag)
 	Fltv107Offs455 float32 // День (без idTag)
 }
-
-
-

@@ -15,7 +15,7 @@
 {
     "Name": "ТГ-5 Минутные",
     "DataFileName": "C:/Mac/Home/Documents/code/вв/Tg5.dat",
-    "ParserType": "tg5_minute",
+    "ParserType": "tg5",
 "LogFileName": "C:/Mac/Home/Documents/code/вв/write_attempts_tg5_minute.log",
             "Enabled": true
 },

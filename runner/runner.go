@@ -164,7 +164,9 @@ func (sr *SourceRunner) processData(logMode string) error {
 	case "tg4":
 		return sr.processTG4Data(logMode)
 	case "tg5":
-		return sr.processTG5Data(logMode)
+		return sr.processTG5Data(logMode) // минутные TG5
+	case "tg5_hour":
+		return sr.processTG5HourData(logMode) // часовые TG5
 	default:
 		return fmt.Errorf("неизвестный тип парсера: %s", sr.Source.ParserType)
 	}
@@ -195,12 +197,36 @@ func (sr *SourceRunner) processTG4Data(logMode string) error {
 }
 
 func (sr *SourceRunner) processTG5Data(logMode string) error {
-	data, err := datafile.ReadData[model.Data_TG5](sr.Source.DataFileName)
+	// Убираем заглушку и делаем реальную обработку
+	data, err := datafile.ReadData[model.Data_TG5_Minute](sr.Source.DataFileName)
 	if err != nil {
 		return err
 	}
 
-	// Формируем метки времени из структуры TG5 - аналогично TG4
+	// Формируем метки времени из структуры TG5
+	timeStampSystem := time.Now()
+	timeStampFile := time.Date(
+		int(data.Fltv105Offs447),             // год (idTag:281)
+		time.Month(int(data.Fltv106Offs451)), // месяц (idTag:282)
+		int(data.Fltv107Offs455),             // день (idTag:283)
+		int(data.Fltv102Offs434),             // час (idTag:278)
+		int(data.Fltv103Offs438),             // минута (idTag:279)
+		int(data.Fltv104Offs442),             // секунда (idTag:280)
+		0, time.UTC,
+	)
+
+	// Используем универсальную функцию
+	return db.SaveCurrentValues(sr.Database, data, timeStampSystem, timeStampFile, sr.Source.Quality, sr.Logger, logMode)
+}
+
+// Новый метод для часовых данных TG5
+func (sr *SourceRunner) processTG5HourData(logMode string) error {
+	data, err := datafile.ReadData[model.Data_TG5_Hour](sr.Source.DataFileName)
+	if err != nil {
+		return err
+	}
+
+	// Извлекаем время из структуры часовых данных
 	timeStampSystem := time.Now()
 	timeStampFile := time.Date(
 		int(data.Fltv105Offs447),             // год
@@ -212,7 +238,6 @@ func (sr *SourceRunner) processTG5Data(logMode string) error {
 		0, time.UTC,
 	)
 
-	// Сохраняем данные с использованием существующей функции
 	return db.SaveCurrentValues(sr.Database, data, timeStampSystem, timeStampFile, sr.Source.Quality, sr.Logger, logMode)
 }
 
