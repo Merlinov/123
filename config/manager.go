@@ -7,7 +7,7 @@ type Manager struct {
 	path    string
 	current runner.Config
 	valid   bool
-	watcher *Watcher
+	// watcher *Watcher
 }
 
 func (m *Manager) Load() error

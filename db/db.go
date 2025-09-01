@@ -8,18 +8,16 @@ import (
 	"time"
 
 	"tg45/logs"
-	"tg45/model"
 )
 
-func SaveCurrentValues(
+func SaveCurrentValues[T any](
 	db *sql.DB,
-	data model.Data_TG4,
+	data T, // ← теперь принимает любой тип!
 	timeStampSystem, timeStampFile time.Time,
 	quality int,
 	logger *log.Logger,
 	logMode string,
 ) error {
-
 	v := reflect.ValueOf(data)
 	t := reflect.TypeOf(data)
 

@@ -4,8 +4,8 @@ package source
 import "tg45/runner"
 
 type Manager struct {
-	controls []*Control
-	config   runner.Config
+	//controls []*Control
+	config runner.Config
 }
 
 func (m *Manager) CreateControls(cfg runner.Config) error

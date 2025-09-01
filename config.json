@@ -5,18 +5,26 @@
     "ConnString": "server=10.211.55.7,1433;database=tec1new;user id=sa;password=VeryStr0ngP@ssw0rd;encrypt=disable",
     "DataSources": [
         {
-            "Name": "TG4",
+            "Name": "ТГ-4 Минутные",
             "DataFileName": "C:/Mac/Home/Documents/code/вв/tg4.dat",
             "ParserType": "tg4",
             "LogFileName": "C:/Mac/Home/Documents/code/вв/write_attempts_tg4.log",
             "Enabled": true
         },
-        {
-            "Name": "TG5",
-            "DataFileName": "D:\\Equipment\\TG5\\data\\Tg5.dat",
-            "ParserType": "tg5",
-            "LogFileName": "C:\\Logs\\TG5\\write_attempts_tg5.log",
-            "Enabled": false
-        }
+    
+{
+    "Name": "ТГ-5 Минутные",
+    "DataFileName": "C:/Mac/Home/Documents/code/вв/Tg5.dat",
+    "ParserType": "tg5_minute",
+"LogFileName": "C:/Mac/Home/Documents/code/вв/write_attempts_tg5_minute.log",
+            "Enabled": true
+},
+{
+    "Name": "ТГ-5 Часовые", 
+    "DataFileName": "C:/Mac/Home/Documents/code/вв/Tg5_h.dat",
+    "ParserType": "tg5_hour",
+"LogFileName": "C:/Mac/Home/Documents/code/вв/write_attempts_tg5_hour.log",
+            "Enabled": true
+}
     ]
 }

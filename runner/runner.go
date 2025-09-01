@@ -40,6 +40,7 @@ type SourceRunner struct {
 	StopChan chan struct{}
 	Running  bool
 	Mutex    sync.Mutex
+	wg       sync.WaitGroup // ← для правильного управления горутинами
 }
 
 // NewSourceRunner создает новый runner для источника
@@ -71,49 +72,83 @@ func (sr *SourceRunner) Start(logMode string) {
 	defer sr.Mutex.Unlock()
 
 	if sr.Running {
+		if logMode == "all" {
+			sr.Logger.Printf("[%s] Уже запущен", sr.Source.Name)
+		}
 		return // уже запущен
 	}
 
+	sr.Logger.Printf("[%s] Старт процесса", sr.Source.Name)
 	sr.Running = true
 	sr.StopChan = make(chan struct{})
 
+	sr.wg.Add(1)
 	go func() {
+		defer sr.wg.Done()
+		defer func() {
+			sr.Mutex.Lock()
+			sr.Running = false
+			sr.Mutex.Unlock()
+			if logMode == "all" {
+				sr.Logger.Printf("[%s] Горутина завершилась", sr.Source.Name)
+			}
+		}()
+
+		if logMode == "all" {
+			sr.Logger.Printf("[%s] Горутина запустилась", sr.Source.Name)
+		}
+
 		for {
 			select {
 			case <-sr.StopChan:
-				sr.Mutex.Lock()
-				sr.Running = false
-				sr.Mutex.Unlock()
+				if logMode == "all" {
+					sr.Logger.Printf("[%s] Процесс остановлен", sr.Source.Name)
+				}
 				return
 			default:
 				err := sr.processData(logMode)
 				if err != nil {
-					sr.Logger.Printf("Ошибка обработки данных %s: %v", sr.Source.Name, err)
+					sr.Logger.Printf("[%s] Ошибка обработки данных: %v", sr.Source.Name, err)
+					// НЕ завершаем горутину при ошибке - просто логируем
 				}
 
 				// Ждем 15 секунд или сигнал остановки
+				var lastTick time.Time
 				select {
 				case <-sr.StopChan:
-					sr.Mutex.Lock()
-					sr.Running = false
-					sr.Mutex.Unlock()
+					if logMode == "all" {
+						sr.Logger.Printf("[%s] Получен сигнал остановки", sr.Source.Name)
+					}
 					return
-				case <-time.After(15 * time.Second):
+				case t := <-time.After(15 * time.Second):
+					lastTick = t
+					if logMode == "all" {
+						sr.Logger.Printf("[%s] Следующая итерация в %v", sr.Source.Name, lastTick)
+					}
 				}
 			}
 		}
 	}()
+
+	if logMode == "all" {
+		sr.Logger.Printf("[%s] Start completed", sr.Source.Name)
+	}
 }
 
 // Stop останавливает обработку данных
 func (sr *SourceRunner) Stop() {
 	sr.Mutex.Lock()
-	defer sr.Mutex.Unlock()
-
-	if sr.Running {
-		close(sr.StopChan)
-		sr.Running = false
+	if !sr.Running {
+		sr.Mutex.Unlock()
+		return
 	}
+
+	sr.Logger.Printf("[%s] Остановка процесса", sr.Source.Name)
+	close(sr.StopChan) // ← закрываем канал
+	sr.Mutex.Unlock()  // ← ВАЖНО: освобождаем мьютекс ДО Wait!
+
+	sr.wg.Wait() // ← ждем завершения горутины
+	sr.Logger.Printf("[%s] Процесс остановлен", sr.Source.Name)
 }
 
 // IsRunning возвращает статус работы
@@ -159,22 +194,26 @@ func (sr *SourceRunner) processTG4Data(logMode string) error {
 	return db.SaveCurrentValues(sr.Database, data, timeStampSystem, timeStampFile, sr.Source.Quality, sr.Logger, logMode)
 }
 
-// processTG5Data обрабатывает данные от TG5 (заглушка для будущей реализации)
 func (sr *SourceRunner) processTG5Data(logMode string) error {
-	// Когда будет готова модель Data_TG5, раскомментируй:
-	// data, err := datafile.ReadData[model.Data_TG5](sr.Source.DataFileName)
-	// if err != nil {
-	//     return err
-	// }
-	//
-	// // Извлечение временных меток специфично для TG5
-	// // timeStampSystem := time.Now()
-	// // timeStampFile := extractTG5Timestamp(data)
-	//
-	// // return db.SaveCurrentValues(sr.Database, data, timeStampSystem, timeStampFile, sr.Source.Quality, sr.Logger, logMode)
+	data, err := datafile.ReadData[model.Data_TG5](sr.Source.DataFileName)
+	if err != nil {
+		return err
+	}
 
-	// Пока что возвращаем ошибку
-	return fmt.Errorf("парсер TG5 еще не реализован")
+	// Формируем метки времени из структуры TG5 - аналогично TG4
+	timeStampSystem := time.Now()
+	timeStampFile := time.Date(
+		int(data.Fltv105Offs447),             // год
+		time.Month(int(data.Fltv106Offs451)), // месяц
+		int(data.Fltv107Offs455),             // день
+		int(data.Fltv102Offs434),             // час
+		int(data.Fltv103Offs438),             // минута
+		int(data.Fltv104Offs442),             // секунда
+		0, time.UTC,
+	)
+
+	// Сохраняем данные с использованием существующей функции
+	return db.SaveCurrentValues(sr.Database, data, timeStampSystem, timeStampFile, sr.Source.Quality, sr.Logger, logMode)
 }
 
 // Close закрывает соединения
