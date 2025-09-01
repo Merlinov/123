@@ -15,14 +15,28 @@ import (
 	"tg45/utils"
 )
 
+/*
+"23s"        // 23 секунды
+"16m"        // 16 минут
+"1h01m01s"   // 1 час 1 минута 1 секунда
+"90m"        // 90 минут (= 1.5 часа)
+"3600s"      // 3600 секунд (= 1 час)
+"1h30m"      // 1 час 30 минут
+"2h15m30s"   // 2 часа 15 минут 30 секунд
+"500ms"      // 500 миллисекунд
+"1.5h"       // 1.5 часа с десятичной дробью
+"45m30s"     // 45 минут 30 секунд
+*/
+
 // DataSource описывает один источник данных
 type DataSource struct {
-	Name         string `json:"Name"`         // TG4, TG5, etc
-	DataFileName string `json:"DataFileName"` // Tg4.dat, Tg5.dat
-	ParserType   string `json:"ParserType"`   // tg4, tg5
-	LogFileName  string `json:"LogFileName"`  // write_attempts_tg4.log
-	Enabled      bool   `json:"Enabled"`      // включен ли источник
-	Quality      int    `json:"Quality"`      // качество данных
+	Name           string `json:"Name"`           // TG4, TG5, etc
+	DataFileName   string `json:"DataFileName"`   // Tg4.dat, Tg5.dat
+	ParserType     string `json:"ParserType"`     // tg4, tg5
+	LogFileName    string `json:"LogFileName"`    // write_attempts_tg4.log
+	Enabled        bool   `json:"Enabled"`        // включен ли источник
+	Quality        int    `json:"Quality"`        // качество данных
+	UpdateInterval string `json:"UpdateInterval"` //интервал парсинга бинарника
 }
 
 // Config описывает структуру конфигурационного файла
@@ -34,13 +48,14 @@ type Config struct {
 
 // SourceRunner управляет одним источником данных
 type SourceRunner struct {
-	Source   DataSource
-	Logger   *log.Logger
-	Database *sql.DB
-	StopChan chan struct{}
-	Running  bool
-	Mutex    sync.Mutex
-	wg       sync.WaitGroup // ← для правильного управления горутинами
+	Source         DataSource
+	Logger         *log.Logger
+	Database       *sql.DB
+	StopChan       chan struct{}
+	Running        bool
+	Mutex          sync.Mutex
+	wg             sync.WaitGroup // ← для правильного управления горутинами
+	updateInterval time.Duration  // ← интервал парсинга
 }
 
 // NewSourceRunner создает новый runner для источника
@@ -57,12 +72,28 @@ func NewSourceRunner(source DataSource, connString string) (*SourceRunner, error
 		return nil, err
 	}
 
+	// Парсим интервал обновления из конфигурации
+	var updateInterval time.Duration
+	if source.UpdateInterval != "" {
+		parsed, err := time.ParseDuration(source.UpdateInterval)
+		if err != nil {
+			logger.Printf("Ошибка парсинга UpdateInterval '%s': %v. Используем 15s по умолчанию", source.UpdateInterval, err)
+			updateInterval = 15 * time.Second
+		} else {
+			updateInterval = parsed
+		}
+	} else {
+		// Если поле не указано, используем 15 секунд по умолчанию
+		updateInterval = 15 * time.Second
+	}
+
 	return &SourceRunner{
-		Source:   source,
-		Logger:   logger,
-		Database: database,
-		StopChan: make(chan struct{}),
-		Running:  false,
+		Source:         source,
+		Logger:         logger,
+		Database:       database,
+		StopChan:       make(chan struct{}),
+		Running:        false,
+		updateInterval: updateInterval,
 	}, nil
 }
 
@@ -120,10 +151,10 @@ func (sr *SourceRunner) Start(logMode string) {
 						sr.Logger.Printf("[%s] Получен сигнал остановки", sr.Source.Name)
 					}
 					return
-				case t := <-time.After(15 * time.Second):
+				case t := <-time.After(sr.updateInterval): // ← используем настраиваемый интервал
 					lastTick = t
 					if logMode == "all" {
-						sr.Logger.Printf("[%s] Следующая итерация в %v", sr.Source.Name, lastTick)
+						sr.Logger.Printf("[%s] Следующая итерация в %v (интервал: %v)", sr.Source.Name, lastTick, sr.updateInterval)
 					}
 				}
 			}

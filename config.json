@@ -1,6 +1,6 @@
 {
     "_comment-LogMode": "LogMode: all — логировать всё, errors — только ошибки ",
-    "LogMode": "all",
+    "LogMode": "errors",
     "_comment-ConnString": "для windows авторизации просто trusted_connection=yes",
     "ConnString": "server=10.211.55.7,1433;database=tec1new;user id=sa;password=VeryStr0ngP@ssw0rd;encrypt=disable",
     "DataSources": [
@@ -11,7 +11,6 @@
             "LogFileName": "C:/Mac/Home/Documents/code/вв/write_attempts_tg4.log",
             "Enabled": true
         },
-    
 {
     "Name": "ТГ-5 Минутные",
     "DataFileName": "C:/Mac/Home/Documents/code/вв/Tg5.dat",
