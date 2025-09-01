@@ -1,0 +1,49 @@
+USE [tec1new]
+GO
+
+/****** Object:  Table [dbo].[CurrentValue]    Script Date: 29.08.2025 8:55:42 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[CurrentValue](
+	[IdTag] [bigint] NOT NULL,
+	[Value] [sql_variant] NULL,
+	[Quality] [int] NULL,
+	[TimeStamp] [datetime] NULL,
+	[TimeStampSystem] [datetime] NULL,
+ CONSTRAINT [PK_CurrentValue] PRIMARY KEY CLUSTERED 
+(
+	[IdTag] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+) ON [PRIMARY]
+GO
+
+
+USE [tec1new]
+GO
+
+/****** Object:  Table [dbo].[Data]    Script Date: 29.08.2025 8:58:52 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[Data](
+	[IdPoint] [bigint] IDENTITY(1,1) NOT NULL,
+	[IdTag] [bigint] NOT NULL,
+	[Value] [float] NOT NULL,
+	[TimeStamp] [datetime] NOT NULL,
+	[TimeStampSystem] [datetime] NOT NULL,
+	[Quality] [int] NOT NULL,
+ CONSTRAINT [PK_Data] PRIMARY KEY CLUSTERED 
+(
+	[IdPoint] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+) ON [PRIMARY]
+GO
+
+

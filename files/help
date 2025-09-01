@@ -1,0 +1,134 @@
+package main
+
+import (
+	"encoding/binary"
+	"fmt"
+	"log"
+	"os"
+)
+
+type Data struct {
+	SNV                    uint8
+	STL                    uint8
+	DLEN                   uint16
+	Unused12               [12]uint8
+	B1                     uint8
+	B                      uint8
+	Fltv01Offs18T1         float32
+	Fltv02Offs22T2         float32
+	Fltv03Offs26T3         float32
+	Fltv04Offs30Tvozdsh    float32
+	Fltv05Offs34DPf1       float32
+	Fltv06Offs38DPf2       float32
+	Fltv07Offs42DPf2       float32
+	Fltv08Offs46DPf4       float32
+	B2                     uint8
+	Fltv09Offs51F1         float32
+	Fltv10Offs55F2         float32
+	Fltv11Offs59F3         float32
+	Fltv12Offs63P1         float32
+	Fltv13Offs67P2         float32
+	Fltv14Offs71P3         float32
+	Fltv15Offs75PdoGRP     float32
+	Fltv16Offs79PzaGRPvkot float32
+	B3                     uint8
+	Fltv17Offs84PzaGRP     float32
+	Fltv18Offs88Pzagd1     float32
+	Fltv19Offs92Pzagd2     float32
+	Fltv20Offs96Pzagd3     float32
+	Fltv21Offs100ZagPrVe   float32
+	Fltv22Offs104ZagLeNi   float32
+	Fltv23Offs108ZagLeVe   float32
+	Fltv24Offs112ZagPrNi   float32
+	B4                     uint8
+	Fltv25Offs117Pnarvozd  float32
+	Fltv26Offs121Pkollekt  float32
+	Fltv27Offs125RZnit1    float32
+	Fltv28Offs129RZnit2    float32
+	Fltv29Offs133RZnit3    float32
+	Fltv30Offs137RZnitmr   float32
+	Fltv31Offs141          float32
+	Fltv32Offs145          float32
+	B5                     uint8
+	Fltv33Offs150          float32
+	Fltv34Offs154          float32
+	Fltv35Offs158          float32
+	Fltv36Offs162          float32
+	Fltv37Offs166          float32
+	Fltv38Offs170          float32
+	Fltv39Offs174          float32
+	Fltv40Offs178          float32
+}
+
+func main() {
+	f, err := os.Open("DanGrp.dat")
+	if err != nil {
+		log.Fatalf("Ошибка открытия файла: %v", err)
+	}
+	defer f.Close()
+
+	var data Data
+
+	if err := binary.Read(f, binary.LittleEndian, &data); err != nil {
+		log.Fatalf("Ошибка чтения данных: %v", err)
+	}
+
+	fmt.Printf("sizeof: %d\n", binary.Size(data))
+	fmt.Printf("SNV: %d\n", data.SNV)
+	fmt.Printf("STL: %d\n", data.STL)
+	fmt.Printf("DLEN: %d\n", data.DLEN)
+
+	fmt.Print("Unused12: ")
+	for _, v := range data.Unused12 {
+		fmt.Printf("%d ", v)
+	}
+	fmt.Println()
+
+	fmt.Printf("b1: %d\n", data.B1)
+	fmt.Printf("b: %d\n", data.B)
+	fmt.Printf("fltv01_offs18_T1: %f\n", data.Fltv01Offs18T1)
+	fmt.Printf("fltv02_offs22_T2: %f\n", data.Fltv02Offs22T2)
+	fmt.Printf("fltv03_offs26_T3: %f\n", data.Fltv03Offs26T3)
+	fmt.Printf("fltv04_offs30_Tvozdsh: %f\n", data.Fltv04Offs30Tvozdsh)
+	fmt.Printf("fltv05_offs34_DP_f1: %f\n", data.Fltv05Offs34DPf1)
+	fmt.Printf("fltv06_offs38_DP_f2: %f\n", data.Fltv06Offs38DPf2)
+	fmt.Printf("fltv07_offs42_DP_f2: %f\n", data.Fltv07Offs42DPf2)
+	fmt.Printf("fltv08_offs46_DP_f4: %f\n", data.Fltv08Offs46DPf4)
+	fmt.Printf("b2: %d\n", data.B2)
+	fmt.Printf("fltv09_offs51_F1: %f\n", data.Fltv09Offs51F1)
+	fmt.Printf("fltv10_offs55_F2: %f\n", data.Fltv10Offs55F2)
+	fmt.Printf("fltv11_offs59_F3: %f\n", data.Fltv11Offs59F3)
+	fmt.Printf("fltv12_offs63_P1: %f\n", data.Fltv12Offs63P1)
+	fmt.Printf("fltv13_offs67_P2: %f\n", data.Fltv13Offs67P2)
+	fmt.Printf("fltv14_offs71_P3: %f\n", data.Fltv14Offs71P3)
+	fmt.Printf("fltv15_offs75_P_doGRP: %f\n", data.Fltv15Offs75PdoGRP)
+	fmt.Printf("fltv16_offs79_P_zaGRPvkot: %f\n", data.Fltv16Offs79PzaGRPvkot)
+	fmt.Printf("b3: %d\n", data.B3)
+	fmt.Printf("fltv17_offs84_P_zaGRP: %f\n", data.Fltv17Offs84PzaGRP)
+	fmt.Printf("fltv18_offs88_P_zagd1: %f\n", data.Fltv18Offs88Pzagd1)
+	fmt.Printf("fltv19_offs92_P_zagd2: %f\n", data.Fltv19Offs92Pzagd2)
+	fmt.Printf("fltv20_offs96_P_zagd3: %f\n", data.Fltv20Offs96Pzagd3)
+	fmt.Printf("fltv21_offs100_Zag_PrVe: %f\n", data.Fltv21Offs100ZagPrVe)
+	fmt.Printf("fltv22_offs104_Zag_LeNi: %f\n", data.Fltv22Offs104ZagLeNi)
+	fmt.Printf("fltv23_offs108_Zag_LeVe: %f\n", data.Fltv23Offs108ZagLeVe)
+	fmt.Printf("fltv24_offs112_Zag_PrNi: %f\n", data.Fltv24Offs112ZagPrNi)
+	fmt.Printf("b4: %d\n", data.B4)
+	fmt.Printf("fltv25_offs117_Pnarvozd: %f\n", data.Fltv25Offs117Pnarvozd)
+	fmt.Printf("fltv26_offs121_P_kollekt: %f\n", data.Fltv26Offs121Pkollekt)
+	fmt.Printf("fltv27_offs125_RZ_nit1: %f\n", data.Fltv27Offs125RZnit1)
+	fmt.Printf("fltv28_offs129_RZ_nit2: %f\n", data.Fltv28Offs129RZnit2)
+	fmt.Printf("fltv29_offs133_RZ_nit3: %f\n", data.Fltv29Offs133RZnit3)
+	fmt.Printf("fltv30_offs137_RZ_nitmr: %f\n", data.Fltv30Offs137RZnitmr)
+	fmt.Printf("fltv31_offs141: %f\n", data.Fltv31Offs141)
+	fmt.Printf("fltv32_offs145: %f\n", data.Fltv32Offs145)
+	fmt.Printf("b5: %d\n", data.B5)
+	fmt.Printf("fltv33_offs150: %f\n", data.Fltv33Offs150)
+	fmt.Printf("fltv34_offs154: %f\n", data.Fltv34Offs154)
+	fmt.Printf("fltv35_offs158: %f\n", data.Fltv35Offs158)
+	fmt.Printf("fltv36_offs162: %f\n", data.Fltv36Offs162)
+	fmt.Printf("fltv37_offs166: %f\n", data.Fltv37Offs166)
+	fmt.Printf("fltv38_offs170: %f\n", data.Fltv38Offs170)
+	fmt.Printf("fltv38_offs170: %f\n", data.Fltv38Offs170) // Дублируется как в C++
+	fmt.Printf("fltv40_offs178: %f\n", data.Fltv40Offs178)
+	fmt.Println()
+}

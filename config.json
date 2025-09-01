@@ -1,0 +1,22 @@
+{
+    "_comment-LogMode": "LogMode: all — логировать всё, errors — только ошибки ",
+    "LogMode": "all",
+    "_comment-ConnString": "для windows авторизации просто trusted_connection=yes",
+    "ConnString": "server=10.211.55.7,1433;database=tec1new;user id=sa;password=VeryStr0ngP@ssw0rd;encrypt=disable",
+    "DataSources": [
+        {
+            "Name": "TG4",
+            "DataFileName": "C:/Mac/Home/Documents/code/вв/tg4.dat",
+            "ParserType": "tg4",
+            "LogFileName": "C:/Mac/Home/Documents/code/вв/write_attempts_tg4.log",
+            "Enabled": true
+        },
+        {
+            "Name": "TG5",
+            "DataFileName": "D:\\Equipment\\TG5\\data\\Tg5.dat",
+            "ParserType": "tg5",
+            "LogFileName": "C:\\Logs\\TG5\\write_attempts_tg5.log",
+            "Enabled": false
+        }
+    ]
+}
