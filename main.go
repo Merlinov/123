@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,8 +12,10 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 	"github.com/skratchdot/open-golang/open"
@@ -52,14 +56,42 @@ type AppManager struct {
 	content        *fyne.Container
 	myWindow       fyne.Window
 	configValid    bool
-
 	// UI элементы
 	errorLabel       *widget.Label
 	reloadButton     *widget.Button
 	editConfigButton *widget.Button
+	//  поля для мониторинга
+	healthMonitorRunning bool
+	healthTicker         *time.Ticker
+	ctx                  context.Context
+	cancelFunc           context.CancelFunc
 }
 
 func main() {
+	// Проверяем единственность экземпляра СРАЗУ
+	singleInstance := NewSingleInstance("TG45DataCollector")
+	locked, err := singleInstance.Lock()
+	if err != nil || !locked {
+		// Показываем пользователю сообщение об ошибке
+		tempApp := app.New()
+		tempWindow := tempApp.NewWindow("Ошибка")
+		tempWindow.Resize(fyne.NewSize(400, 200))
+
+		var errorMsg string
+		if err != nil {
+			errorMsg = fmt.Sprintf("Ошибка запуска: %v", err)
+		} else {
+			errorMsg = "Приложение уже запущено!\n\nПроверьте системный трей или диспетчер задач."
+		}
+
+		dialog.ShowError(fmt.Errorf(errorMsg), tempWindow)
+		tempWindow.ShowAndRun()
+		os.Exit(1)
+	}
+
+	// Освобождаем лок при завершении приложения
+	defer singleInstance.Release()
+
 	myApp := app.New()
 	myWindow := myApp.NewWindow(AppTitle)
 	myWindow.Resize(fyne.NewSize(WindowWidth, WindowHeight))
@@ -67,11 +99,14 @@ func main() {
 	if icon, err := fyne.LoadResourceFromPath(IconPath); err == nil {
 		myWindow.SetIcon(icon)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 
 	appManager := &AppManager{
 		configPath:  ConfigPath,
 		myWindow:    myWindow,
 		configValid: false,
+		ctx:         ctx,
+		cancelFunc:  cancel,
 	}
 
 	// Запуск приложения
@@ -84,12 +119,70 @@ func (am *AppManager) run() {
 	am.reloadConfig()
 	go am.configWatcher()
 
+	// ДОБАВЛЯЕМ поддержку системного трея
+	if desk, ok := fyne.CurrentApp().(desktop.App); ok {
+		menu := fyne.NewMenu("TG45 ТЭЦ",
+			fyne.NewMenuItem("Показать", func() {
+				am.myWindow.Show()
+				am.myWindow.RequestFocus()
+			}),
+			fyne.NewMenuItem("Статус", func() {
+				am.showStatusDialog()
+			}),
+			fyne.NewMenuItemSeparator(),
+			fyne.NewMenuItem("Скрыть в трей", func() {
+				am.myWindow.Hide()
+			}),
+			fyne.NewMenuItem("Полный выход", func() { // НОВЫЙ пункт
+				am.shutdown()
+			}),
+		)
+		desk.SetSystemTrayMenu(menu)
+	}
+
+	// Изменяем поведение закрытия - сворачиваем в трей вместо выхода
 	am.myWindow.SetCloseIntercept(func() {
-		am.stopAllSources()
-		am.myWindow.Close()
+		am.myWindow.Hide()
+	})
+
+	// ДОБАВЬ возможность выхода по Ctrl+Q
+	ctrlQ := &desktop.CustomShortcut{KeyName: fyne.KeyQ, Modifier: fyne.KeyModifierControl}
+	am.myWindow.Canvas().AddShortcut(ctrlQ, func(shortcut fyne.Shortcut) {
+		am.shutdown()
 	})
 
 	am.myWindow.ShowAndRun()
+}
+
+// Новые методы для управления
+func (am *AppManager) showStatusDialog() {
+	status := "Статус источников:\n\n"
+	for _, control := range am.sourceControls {
+		runStatus := "Остановлен"
+		if control.Runner.IsRunning() {
+			runStatus = "Запущен"
+		}
+		status += fmt.Sprintf("• %s: %s\n", control.Source.Name, runStatus)
+	}
+
+	dialog.ShowInformation("Статус системы", status, am.myWindow)
+}
+
+func (am *AppManager) shutdown() {
+
+	fmt.Println("Начинаем shutdown...")
+
+	am.stopHealthMonitoring()
+
+	if am.cancelFunc != nil {
+		am.cancelFunc()
+	}
+
+	time.Sleep(1 * time.Second)
+	am.closeOldSources()
+
+	fyne.CurrentApp().Quit()
+	fmt.Println("Shutdown завершен")
 }
 
 func (am *AppManager) updateSourceStatus(control *SourceControl, isRunning bool) {
@@ -101,6 +194,9 @@ func (am *AppManager) updateSourceStatus(control *SourceControl, isRunning bool)
 		control.StatusLabel.SetText(fmt.Sprintf("%s: %s", sourceName, StatusStopped))
 		control.RunStopBtn.SetText(ButtonStart)
 	}
+
+	// после изменения состояния перерисовываем UI с новыми цветами
+	am.updateSourcesUI()
 }
 
 // initializeUI создает базовый интерфейс, который всегда доступен
@@ -136,6 +232,15 @@ func (am *AppManager) initializeUI() {
 
 // reloadConfig перезагружает конфигурацию и обновляет UI
 func (am *AppManager) reloadConfig() {
+	// Сохраняем состояние запущенных источников
+	runningStates := make(map[string]bool)
+	for _, control := range am.sourceControls {
+		if control.Runner != nil {
+			runningStates[control.Source.Name] = control.Runner.IsRunning()
+		}
+	}
+	// Останавливаем мониторинг если был запущен
+	am.stopHealthMonitoring()
 	// Останавливаем все текущие источники
 	am.stopAllSources()
 
@@ -173,10 +278,81 @@ func (am *AppManager) reloadConfig() {
 	// Создаем новые контролы источников
 	am.createSourceControls()
 	am.updateSourcesUI()
+	// ДОБАВЛЯЕМ запуск мониторинга здоровья
+	am.startHealthMonitoring()
+	// Восстанавливаем состояние после создания контролов
+	for _, control := range am.sourceControls {
+		if wasRunning, exists := runningStates[control.Source.Name]; exists && wasRunning {
+			control.Runner.Start(am.cfg.LogMode)
+			am.updateSourceStatus(control, true)
+		}
+	}
+}
+
+func (am *AppManager) startHealthMonitoring() {
+	if !am.configValid || am.healthMonitorRunning {
+		return
+	}
+
+	am.healthMonitorRunning = true
+	am.healthTicker = time.NewTicker(30 * time.Second)
+
+	go func() {
+		defer func() {
+			am.healthMonitorRunning = false
+			if am.healthTicker != nil {
+				am.healthTicker.Stop()
+			}
+			fmt.Println("HealthMonitoring: горутина завершена")
+		}()
+
+		for {
+			select {
+			case <-am.ctx.Done(): // ДОБАВЬ проверку контекста
+				fmt.Println("HealthMonitoring: получен сигнал остановки")
+				return
+			case <-am.healthTicker.C:
+				am.checkSourcesHealth()
+			}
+		}
+	}()
+}
+
+func (am *AppManager) checkSourcesHealth() {
+	if am.sourceControls == nil {
+		return
+	}
+
+	for _, control := range am.sourceControls {
+		if control.Runner == nil {
+			continue
+		}
+
+		wasRunning := control.RunStopBtn.Text == ButtonStop // проверяем по "Stop"
+		isRunning := control.Runner.IsRunning()
+
+		if wasRunning != isRunning {
+			am.updateSourceStatus(control, isRunning)
+		}
+
+		if !isRunning && wasRunning {
+			control.StatusLabel.SetText(fmt.Sprintf("%s: Ошибка - автоперезапуск", control.Source.Name))
+		}
+	}
+}
+
+func (am *AppManager) stopHealthMonitoring() {
+	if am.healthTicker != nil {
+		am.healthTicker.Stop()
+		am.healthMonitorRunning = false
+	}
 }
 
 // createSourceControls создает контролы для источников данных
 func (am *AppManager) createSourceControls() {
+	// СНАЧАЛА закрываем старые ресурсы если они есть
+	am.closeOldSources()
+
 	am.sourceControls = []*SourceControl{}
 
 	for _, source := range am.cfg.DataSources {
@@ -196,11 +372,31 @@ func (am *AppManager) createSourceControls() {
 			StatusLabel: widget.NewLabel(fmt.Sprintf("%s: Остановлен", source.Name)),
 		}
 
-		// Создаем кнопки с правильными замыканиями
 		am.createSourceButton(control, source)
-
 		am.sourceControls = append(am.sourceControls, control)
 	}
+}
+
+func (am *AppManager) closeOldSources() {
+	if am.sourceControls == nil {
+		return
+	}
+
+	for _, control := range am.sourceControls {
+		if control.Runner != nil {
+			// Останавливаем, если запущен
+			if control.Runner.IsRunning() {
+				control.Runner.Stop()
+			}
+			// Закрываем ресурсы (соединения с БД, файлы логов)
+			if err := control.Runner.Close(); err != nil {
+				// Логируем через errorLabel в UI, а не fmt.Printf
+				am.errorLabel.SetText(fmt.Sprintf("⚠️ Ошибка закрытия ресурсов для %s: %v", control.Source.Name, err))
+			}
+		}
+	}
+
+	am.sourceControls = nil
 }
 
 // Улучшенная функция для создания кнопок
@@ -220,7 +416,17 @@ func (am *AppManager) createSourceButton(control *SourceControl, source runner.D
 	}
 }
 
-// updateSourcesUI обновляет UI с источниками данных
+// createStyledButton создает кнопку с цветным фоном
+func createStyledButton(text string, bgColor color.Color, onTapped func()) fyne.CanvasObject {
+	button := widget.NewButton(text, onTapped)
+
+	// Создаем цветной прямоугольник как фон
+	bgRect := canvas.NewRectangle(bgColor)
+
+	// Помещаем кнопку поверх цветного фона
+	return container.NewMax(bgRect, button)
+}
+
 // updateSourcesUI обновляет UI с источниками данных
 func (am *AppManager) updateSourcesUI() {
 	if !am.configValid {
@@ -242,10 +448,27 @@ func (am *AppManager) updateSourcesUI() {
 
 		// Добавляем данные по источникам
 		for _, control := range am.sourceControls {
-			// Убираем ручное изменение размеров - Grid сам все выровняет
+			// Название источника
 			gridContainer.Add(widget.NewLabel(control.Source.Name))
+
+			// Статус
 			gridContainer.Add(control.StatusLabel)
-			gridContainer.Add(control.RunStopBtn)
+
+			// ЦВЕТНАЯ КНОПКА в зависимости от состояния
+			var styledButton fyne.CanvasObject
+			if control.Runner != nil && control.Runner.IsRunning() {
+				// Красная кнопка Stop для запущенного источника
+				styledButton = createStyledButton(ButtonStop,
+					&color.NRGBA{R: 220, G: 20, B: 60, A: 255}, // Темно-красный
+					control.RunStopBtn.OnTapped)
+			} else {
+				// Зеленая кнопка Start для остановленного источника
+				styledButton = createStyledButton(ButtonStart,
+					&color.NRGBA{R: 34, G: 139, B: 34, A: 255}, // Темно-зеленый
+					control.RunStopBtn.OnTapped)
+			}
+
+			gridContainer.Add(styledButton)
 			gridContainer.Add(control.ViewLogBtn)
 		}
 
@@ -295,18 +518,39 @@ func (am *AppManager) clearSourcesFromUI() {
 // configWatcher следит за изменениями файла конфигурации
 func (am *AppManager) configWatcher() {
 	var lastModTime time.Time
+	if stat, err := os.Stat(am.configPath); err == nil {
+		lastModTime = stat.ModTime()
+	}
+
 	ticker := time.NewTicker(WatchInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if stat, err := os.Stat(am.configPath); err == nil {
-			if !lastModTime.Equal(stat.ModTime()) {
-				lastModTime = stat.ModTime()
-				time.Sleep(100 * time.Millisecond)
-				go func() {
-					time.Sleep(1 * time.Second)
-					am.reloadConfig()
-				}()
+	for {
+		select {
+		case <-am.ctx.Done(): // ДОБАВЬ проверку контекста
+			fmt.Println("ConfigWatcher: получен сигнал остановки")
+			return
+		case <-ticker.C:
+			if stat, err := os.Stat(am.configPath); err == nil {
+				currentModTime := stat.ModTime()
+				if !lastModTime.IsZero() && !lastModTime.Equal(currentModTime) {
+					fmt.Printf("Config file changed: %v -> %v\n", lastModTime, currentModTime)
+					lastModTime = currentModTime
+					time.Sleep(100 * time.Millisecond)
+
+					// Проверяем контекст перед перезагрузкой
+					select {
+					case <-am.ctx.Done():
+						return
+					default:
+						go func() {
+							time.Sleep(1 * time.Second)
+							am.reloadConfig()
+						}()
+					}
+				} else if lastModTime.IsZero() {
+					lastModTime = currentModTime
+				}
 			}
 		}
 	}
@@ -325,22 +569,30 @@ func (am *AppManager) toggleSource(control *SourceControl) {
 
 // startAllSources запускает все источники
 func (am *AppManager) startAllSources() {
+	if am.sourceControls == nil {
+		return
+	}
+
 	for _, control := range am.sourceControls {
-		if !control.Runner.IsRunning() {
+		if control.Runner != nil && !control.Runner.IsRunning() {
 			control.Runner.Start(am.cfg.LogMode)
-			control.StatusLabel.SetText(fmt.Sprintf("%s: Запущен", control.Source.Name))
-			control.RunStopBtn.SetText("Stop")
+			control.StatusLabel.SetText(fmt.Sprintf("%s: %s", control.Source.Name, StatusRunning)) // "Запущен"
+			control.RunStopBtn.SetText(ButtonStop)                                                 // "Stop"
 		}
 	}
 }
 
 // stopAllSources останавливает все источники
 func (am *AppManager) stopAllSources() {
+	if am.sourceControls == nil {
+		return
+	}
+
 	for _, control := range am.sourceControls {
-		if control.Runner.IsRunning() {
+		if control.Runner != nil && control.Runner.IsRunning() {
 			control.Runner.Stop()
-			control.StatusLabel.SetText(fmt.Sprintf("%s: %s", control.Source.Name, StatusStopped))
-			control.RunStopBtn.SetText(ButtonStart)
+			control.StatusLabel.SetText(fmt.Sprintf("%s: %s", control.Source.Name, StatusStopped)) // "Остановлен"
+			control.RunStopBtn.SetText(ButtonStart)                                                // "Start"
 		}
 	}
 }

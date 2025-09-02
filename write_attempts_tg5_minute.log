@@ -5742,3 +5742,17 @@
 2025/09/01 17:00:26 [ТГ-5 Минутные] Получен сигнал остановки
 2025/09/01 17:00:26 [ТГ-5 Минутные] Горутина завершилась
 2025/09/01 17:00:26 [ТГ-5 Минутные] Процесс остановлен
+2025/09/01 21:29:05 [ТГ-5 Минутные] Старт процесса
+2025/09/01 22:25:08 Time: 2025-09-01T22:25:08+03:00 | IdTag: 177 | Status: UPDATE_FAIL | Error: read tcp 10.211.55.3:52098->10.211.55.7:1433: wsarecv: An existing connection was forcibly closed by the remote host.
+2025/09/01 22:25:08 [ТГ-5 Минутные] Ошибка обработки данных: ошибка UPDATE IdTag=177: read tcp 10.211.55.3:52098->10.211.55.7:1433: wsarecv: An existing connection was forcibly closed by the remote host.
+2025/09/01 23:11:12 Time: 2025-09-01T23:11:12+03:00 | IdTag: 177 | Status: UPDATE_FAIL | Error: read tcp 10.211.55.3:56018->10.211.55.7:1433: wsarecv: An existing connection was forcibly closed by the remote host.
+2025/09/01 23:11:12 [ТГ-5 Минутные] Ошибка обработки данных: ошибка UPDATE IdTag=177: read tcp 10.211.55.3:56018->10.211.55.7:1433: wsarecv: An existing connection was forcibly closed by the remote host.
+2025/09/02 08:04:18 Time: 2025-09-02T08:04:18+03:00 | IdTag: 177 | Status: UPDATE_FAIL | Error: read tcp 10.211.55.3:53771->10.211.55.7:1433: wsarecv: An existing connection was forcibly closed by the remote host.
+2025/09/02 08:04:18 [ТГ-5 Минутные] Ошибка обработки данных: ошибка UPDATE IdTag=177: read tcp 10.211.55.3:53771->10.211.55.7:1433: wsarecv: An existing connection was forcibly closed by the remote host.
+2025/09/02 09:04:30 Time: 2025-09-02T09:04:30+03:00 | IdTag: 177 | Status: UPDATE_FAIL | Error: EOF
+2025/09/02 09:04:30 [ТГ-5 Минутные] Ошибка обработки данных: ошибка UPDATE IdTag=177: EOF
+2025/09/02 09:06:25 [ТГ-5 Минутные] Остановка процесса
+2025/09/02 09:06:25 [ТГ-5 Минутные] Процесс остановлен
+2025/09/02 16:45:46 [ТГ-5 Минутные] Старт процесса
+2025/09/02 17:15:55 [ТГ-5 Минутные] Старт процесса
+2025/09/02 17:25:29 [ТГ-5 Минутные] Старт процесса

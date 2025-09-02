@@ -56,6 +56,10 @@ type SourceRunner struct {
 	Mutex          sync.Mutex
 	wg             sync.WaitGroup // ← для правильного управления горутинами
 	updateInterval time.Duration  // ← интервал парсинга
+
+	restartCount int       // счетчик перезапусков
+	lastError    error     // последняя ошибка
+	lastRestart  time.Time // время последнего перезапуска
 }
 
 // NewSourceRunner создает новый runner для источника
@@ -72,6 +76,16 @@ func NewSourceRunner(source DataSource, connString string) (*SourceRunner, error
 		return nil, err
 	}
 
+	// ДОБАВЛЯЕМ настройки пула соединений для стабильности
+	database.SetMaxOpenConns(10)                 // максимум 10 соединений
+	database.SetMaxIdleConns(2)                  // 2 в простое
+	database.SetConnMaxLifetime(5 * time.Minute) // переподключение каждые 5 минут
+	database.SetConnMaxIdleTime(2 * time.Minute) // закрытие неактивных через 2 минуты
+
+	// Проверяем соединение при создании
+	if err := database.Ping(); err != nil {
+		return nil, fmt.Errorf("не удается подключиться к базе данных: %w", err)
+	}
 	// Парсим интервал обновления из конфигурации
 	var updateInterval time.Duration
 	if source.UpdateInterval != "" {
@@ -94,10 +108,80 @@ func NewSourceRunner(source DataSource, connString string) (*SourceRunner, error
 		StopChan:       make(chan struct{}),
 		Running:        false,
 		updateInterval: updateInterval,
+		restartCount:   0,
+		lastError:      nil,
+		lastRestart:    time.Time{},
 	}, nil
 }
 
 // Start запускает обработку данных в отдельной горутине
+// func (sr *SourceRunner) Start(logMode string) {
+// 	sr.Mutex.Lock()
+// 	defer sr.Mutex.Unlock()
+
+// 	if sr.Running {
+// 		if logMode == "all" {
+// 			sr.Logger.Printf("[%s] Уже запущен", sr.Source.Name)
+// 		}
+// 		return // уже запущен
+// 	}
+
+// 	sr.Logger.Printf("[%s] Старт процесса", sr.Source.Name)
+// 	sr.Running = true
+// 	sr.StopChan = make(chan struct{})
+
+// 	sr.wg.Add(1)
+// 	go func() {
+// 		defer sr.wg.Done()
+// 		defer func() {
+// 			sr.Mutex.Lock()
+// 			sr.Running = false
+// 			sr.Mutex.Unlock()
+// 			if logMode == "all" {
+// 				sr.Logger.Printf("[%s] Горутина завершилась", sr.Source.Name)
+// 			}
+// 		}()
+
+// 		if logMode == "all" {
+// 			sr.Logger.Printf("[%s] Горутина запустилась", sr.Source.Name)
+// 		}
+
+// 		for {
+// 			select {
+// 			case <-sr.StopChan:
+// 				if logMode == "all" {
+// 					sr.Logger.Printf("[%s] Процесс остановлен", sr.Source.Name)
+// 				}
+// 				return
+// 			default:
+// 				err := sr.processData(logMode)
+// 				if err != nil {
+// 					sr.Logger.Printf("[%s] Ошибка обработки данных: %v", sr.Source.Name, err)
+// 					// НЕ завершаем горутину при ошибке - просто логируем
+// 				}
+
+// 				// Ждем 15 секунд или сигнал остановки
+// 				var lastTick time.Time
+// 				select {
+// 				case <-sr.StopChan:
+// 					if logMode == "all" {
+// 						sr.Logger.Printf("[%s] Получен сигнал остановки", sr.Source.Name)
+// 					}
+// 					return
+// 				case t := <-time.After(sr.updateInterval): // ← используем настраиваемый интервал
+// 					lastTick = t
+// 					if logMode == "all" {
+// 						sr.Logger.Printf("[%s] Следующая итерация в %v (интервал: %v)", sr.Source.Name, lastTick, sr.updateInterval)
+// 					}
+// 				}
+// 			}
+// 		}
+// 	}()
+
+//		if logMode == "all" {
+//			sr.Logger.Printf("[%s] Start completed", sr.Source.Name)
+//		}
+//	}
 func (sr *SourceRunner) Start(logMode string) {
 	sr.Mutex.Lock()
 	defer sr.Mutex.Unlock()
@@ -106,7 +190,7 @@ func (sr *SourceRunner) Start(logMode string) {
 		if logMode == "all" {
 			sr.Logger.Printf("[%s] Уже запущен", sr.Source.Name)
 		}
-		return // уже запущен
+		return
 	}
 
 	sr.Logger.Printf("[%s] Старт процесса", sr.Source.Name)
@@ -116,54 +200,108 @@ func (sr *SourceRunner) Start(logMode string) {
 	sr.wg.Add(1)
 	go func() {
 		defer sr.wg.Done()
+		// ДОБАВЛЯЕМ ЗАЩИТУ ОТ PANIC
 		defer func() {
-			sr.Mutex.Lock()
-			sr.Running = false
-			sr.Mutex.Unlock()
+			if r := recover(); r != nil {
+				sr.Logger.Printf("[%s] КРИТИЧЕСКАЯ ОШИБКА - горутина упала: %v", sr.Source.Name, r)
+				sr.Mutex.Lock()
+				sr.lastError = fmt.Errorf("panic: %v", r)
+				sr.restartCount++
+				sr.lastRestart = time.Now()
+				sr.Running = false
+				sr.Mutex.Unlock()
+
+				// Автоматический перезапуск через 30 секунд (если не превышен лимит)
+				if sr.restartCount <= 5 { // максимум 5 перезапусков
+					go func() {
+						time.Sleep(30 * time.Second)
+						sr.Logger.Printf("[%s] Попытка автоматического перезапуска (%d/5)",
+							sr.Source.Name, sr.restartCount)
+						sr.Start(logMode)
+					}()
+				}
+			} else {
+				sr.Mutex.Lock()
+				sr.Running = false
+				sr.Mutex.Unlock()
+			}
+
 			if logMode == "all" {
 				sr.Logger.Printf("[%s] Горутина завершилась", sr.Source.Name)
 			}
 		}()
 
-		if logMode == "all" {
-			sr.Logger.Printf("[%s] Горутина запустилась", sr.Source.Name)
-		}
-
-		for {
-			select {
-			case <-sr.StopChan:
-				if logMode == "all" {
-					sr.Logger.Printf("[%s] Процесс остановлен", sr.Source.Name)
-				}
-				return
-			default:
-				err := sr.processData(logMode)
-				if err != nil {
-					sr.Logger.Printf("[%s] Ошибка обработки данных: %v", sr.Source.Name, err)
-					// НЕ завершаем горутину при ошибке - просто логируем
-				}
-
-				// Ждем 15 секунд или сигнал остановки
-				var lastTick time.Time
-				select {
-				case <-sr.StopChan:
-					if logMode == "all" {
-						sr.Logger.Printf("[%s] Получен сигнал остановки", sr.Source.Name)
-					}
-					return
-				case t := <-time.After(sr.updateInterval): // ← используем настраиваемый интервал
-					lastTick = t
-					if logMode == "all" {
-						sr.Logger.Printf("[%s] Следующая итерация в %v (интервал: %v)", sr.Source.Name, lastTick, sr.updateInterval)
-					}
-				}
-			}
-		}
+		sr.runMainLoop(logMode)
 	}()
 
 	if logMode == "all" {
 		sr.Logger.Printf("[%s] Start completed", sr.Source.Name)
 	}
+}
+
+// Выносим основной цикл в отдельный метод
+func (sr *SourceRunner) runMainLoop(logMode string) {
+	if logMode == "all" {
+		sr.Logger.Printf("[%s] Горутина запустилась", sr.Source.Name)
+	}
+
+	for {
+		select {
+		case <-sr.StopChan:
+			if logMode == "all" {
+				sr.Logger.Printf("[%s] Процесс остановлен", sr.Source.Name)
+			}
+			return
+		default:
+			// ИСПОЛЬЗУЕМ RETRY LOGIC
+			err := sr.processDataWithRetry(logMode)
+			if err != nil {
+				sr.Logger.Printf("[%s] Ошибка обработки данных: %v", sr.Source.Name, err)
+				sr.Mutex.Lock()
+				sr.lastError = err
+				sr.Mutex.Unlock()
+			} else {
+				// Сбрасываем счетчик при успешной обработке
+				sr.Mutex.Lock()
+				sr.restartCount = 0
+				sr.lastError = nil
+				sr.Mutex.Unlock()
+			}
+
+			select {
+			case <-sr.StopChan:
+				return
+			case <-time.After(sr.updateInterval):
+				// продолжаем
+			}
+		}
+	}
+}
+
+// НОВЫЙ метод с retry logic
+func (sr *SourceRunner) processDataWithRetry(logMode string) error {
+	maxRetries := 3
+	baseDelay := 2 * time.Second
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		err := sr.processData(logMode)
+		if err == nil {
+			return nil // Успех!
+		}
+
+		if attempt == maxRetries {
+			return fmt.Errorf("превышено количество попыток (%d): %w", maxRetries, err)
+		}
+
+		delay := baseDelay * time.Duration(1<<attempt) // 2s, 4s, 8s
+		if logMode == "all" || attempt == maxRetries-1 {
+			sr.Logger.Printf("[%s] Попытка %d/%d не удалась: %v. Повтор через %v",
+				sr.Source.Name, attempt+1, maxRetries, err, delay)
+		}
+
+		time.Sleep(delay)
+	}
+	return nil
 }
 
 // Stop останавливает обработку данных

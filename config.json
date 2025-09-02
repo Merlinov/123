@@ -9,21 +9,24 @@
             "DataFileName": "C:/Mac/Home/Documents/code/вв/tg4.dat",
             "ParserType": "tg4",
             "LogFileName": "C:/Mac/Home/Documents/code/вв/write_attempts_tg4.log",
-            "Enabled": true
+            "Enabled": true,
+"UpdateInterval": "15s"
         },
 {
     "Name": "ТГ-5 Минутные",
     "DataFileName": "C:/Mac/Home/Documents/code/вв/Tg5.dat",
     "ParserType": "tg5",
 "LogFileName": "C:/Mac/Home/Documents/code/вв/write_attempts_tg5_minute.log",
-            "Enabled": true
+            "Enabled": true,
+"UpdateInterval": "15s"
 },
 {
     "Name": "ТГ-5 Часовые", 
     "DataFileName": "C:/Mac/Home/Documents/code/вв/Tg5_h.dat",
     "ParserType": "tg5_hour",
 "LogFileName": "C:/Mac/Home/Documents/code/вв/write_attempts_tg5_hour.log",
-            "Enabled": true
+            "Enabled": true,
+"UpdateInterval": "5m"
 }
     ]
 }
