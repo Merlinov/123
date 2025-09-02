@@ -17,6 +17,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/skratchdot/open-golang/open"
 
@@ -195,8 +196,52 @@ func (am *AppManager) updateSourceStatus(control *SourceControl, isRunning bool)
 		control.RunStopBtn.SetText(ButtonStart)
 	}
 
-	// после изменения состояния перерисовываем UI с новыми цветами
-	am.updateSourcesUI()
+	control.RunStopBtn.Refresh()
+	control.StatusLabel.Refresh()
+}
+
+// Функция для создания кнопки с кастомным цветом
+func createCustomColorButton(text string, bgColor color.Color, textColor color.Color, onTapped func()) fyne.CanvasObject {
+	button := widget.NewButton(text, onTapped)
+
+	customTheme := &customButtonTheme{
+		buttonColor: bgColor,
+		textColor:   textColor,
+	}
+
+	return container.NewThemeOverride(button, customTheme)
+}
+
+// customButtonTheme - кастомная тема для кнопки
+// Кастомная тема для цветных кнопок
+// ИСПРАВЛЕННАЯ customButtonTheme
+type customButtonTheme struct {
+	buttonColor color.Color
+	textColor   color.Color
+}
+
+func (t *customButtonTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	switch name {
+	// ПРАВИЛЬНЫЕ названия констант в Fyne:
+	case theme.ColorNameButton:
+		return t.buttonColor
+	case theme.ColorNameForeground:
+		return t.textColor
+	default:
+		return theme.DefaultTheme().Color(name, variant)
+	}
+}
+
+func (t *customButtonTheme) Font(style fyne.TextStyle) fyne.Resource {
+	return theme.DefaultTheme().Font(style)
+}
+
+func (t *customButtonTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
+	return theme.DefaultTheme().Icon(name)
+}
+
+func (t *customButtonTheme) Size(name fyne.ThemeSizeName) float32 {
+	return theme.DefaultTheme().Size(name)
 }
 
 // initializeUI создает базовый интерфейс, который всегда доступен
@@ -437,34 +482,33 @@ func (am *AppManager) updateSourcesUI() {
 		noSourcesLabel := widget.NewLabel("Нет активных источников данных.\nПроверьте настройку 'Enabled' в config.json")
 		am.content.Add(noSourcesLabel)
 	} else {
-		// Создаем сетку с 4 колонками (Источник, Статус, Управление, Логи)
 		gridContainer := container.New(layout.NewGridLayout(4))
 
-		// Добавляем заголовки
+		// Заголовки
 		gridContainer.Add(widget.NewLabelWithStyle("Источник", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
 		gridContainer.Add(widget.NewLabelWithStyle("Статус", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
 		gridContainer.Add(widget.NewLabelWithStyle("Управление", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}))
 		gridContainer.Add(widget.NewLabelWithStyle("Логи", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}))
 
-		// Добавляем данные по источникам
+		// Данные по источникам с КАСТОМНЫМИ ЦВЕТАМИ
 		for _, control := range am.sourceControls {
-			// Название источника
 			gridContainer.Add(widget.NewLabel(control.Source.Name))
-
-			// Статус
 			gridContainer.Add(control.StatusLabel)
 
-			// ЦВЕТНАЯ КНОПКА в зависимости от состояния
+			// КНОПКА С КАСТОМНЫМИ ЦВЕТАМИ в зависимости от состояния
 			var styledButton fyne.CanvasObject
 			if control.Runner != nil && control.Runner.IsRunning() {
-				// Красная кнопка Stop для запущенного источника
-				styledButton = createStyledButton(ButtonStop,
-					&color.NRGBA{R: 220, G: 20, B: 60, A: 255}, // Темно-красный
+				// ОРАНЖЕВАЯ кнопка Stop для запущенного источника
+				styledButton = createCustomColorButton(ButtonStop,
+					&color.NRGBA{R: 46, G: 125, B: 50, A: 255}, //фон
+
+					&color.NRGBA{R: 255, G: 255, B: 255, A: 255}, //текст
 					control.RunStopBtn.OnTapped)
 			} else {
-				// Зеленая кнопка Start для остановленного источника
-				styledButton = createStyledButton(ButtonStart,
-					&color.NRGBA{R: 34, G: 139, B: 34, A: 255}, // Темно-зеленый
+				// ФИОЛЕТОВАЯ кнопка Start для остановленного источника
+				styledButton = createCustomColorButton(ButtonStart,
+					&color.NRGBA{R: 233, G: 30, B: 99, A: 255},
+					&color.NRGBA{R: 255, G: 255, B: 255, A: 255},
 					control.RunStopBtn.OnTapped)
 			}
 
@@ -474,21 +518,23 @@ func (am *AppManager) updateSourcesUI() {
 
 		am.content.Add(gridContainer)
 
-		// Кнопки общего управления
 		am.content.Add(widget.NewSeparator())
 
 		startAllButton := widget.NewButton("Запустить все", func() {
 			am.startAllSources()
+			// ДОБАВЬ обновление цветов после массовых операций
+			am.updateAllButtonColors()
 		})
 
 		stopAllButton := widget.NewButton("Остановить все", func() {
 			am.stopAllSources()
+			// ДОБАВЬ обновление цветов после массовых операций
+			am.updateAllButtonColors()
 		})
 
 		generalControls := container.NewHBox(startAllButton, stopAllButton)
 		am.content.Add(generalControls)
 
-		// Информация о конфигурации
 		am.content.Add(widget.NewSeparator())
 		infoLabel := widget.NewLabel(fmt.Sprintf("Режим логирования: %s | База данных: %s",
 			am.cfg.LogMode, am.extractServerFromConnString(am.cfg.ConnString)))
@@ -496,7 +542,6 @@ func (am *AppManager) updateSourcesUI() {
 		am.content.Add(infoLabel)
 	}
 
-	// Обновляем отображение
 	am.content.Refresh()
 }
 
@@ -565,6 +610,9 @@ func (am *AppManager) toggleSource(control *SourceControl) {
 		control.Runner.Start(am.cfg.LogMode)
 		am.updateSourceStatus(control, true)
 	}
+
+	// ДОБАВЬ ПРИНУДИТЕЛЬНОЕ ОБНОВЛЕНИЕ ИНТЕРФЕЙСА!
+	am.updateAllButtonColors()
 }
 
 // startAllSources запускает все источники
@@ -595,6 +643,13 @@ func (am *AppManager) stopAllSources() {
 			control.RunStopBtn.SetText(ButtonStart)                                                // "Start"
 		}
 	}
+}
+
+// updateAllButtonColors обновляет цвета всех кнопок после массовых операций
+func (am *AppManager) updateAllButtonColors() {
+	// Перерисовываем весь интерфейс с обновленными цветами кнопок
+	am.clearSourcesFromUI()
+	am.updateSourcesUI()
 }
 
 // validateConfig проверяет корректность конфигурации
