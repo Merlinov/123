@@ -38,8 +38,8 @@ const (
 	StatusRunning = "Запущен"
 
 	// Тексты кнопок
-	ButtonStart = "Start"
-	ButtonStop  = "Stop"
+	ButtonStart = "Запустить"
+	ButtonStop  = "Остановить"
 )
 
 type SourceControl struct {
@@ -85,7 +85,7 @@ func main() {
 			errorMsg = "Приложение уже запущено!\n\nПроверьте системный трей или диспетчер задач."
 		}
 
-		dialog.ShowError(fmt.Errorf(errorMsg), tempWindow)
+		dialog.ShowError(errors.New(errorMsg), tempWindow)
 		tempWindow.ShowAndRun()
 		os.Exit(1)
 	}
@@ -469,7 +469,7 @@ func createStyledButton(text string, bgColor color.Color, onTapped func()) fyne.
 	bgRect := canvas.NewRectangle(bgColor)
 
 	// Помещаем кнопку поверх цветного фона
-	return container.NewMax(bgRect, button)
+	return container.NewStack(bgRect, button)
 }
 
 // updateSourcesUI обновляет UI с источниками данных
