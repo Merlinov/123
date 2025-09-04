@@ -6,7 +6,10 @@ require (
 	fyne.io/fyne/v2 v2.6.1
 	github.com/denisenkom/go-mssqldb v0.12.3
 	github.com/gofrs/flock v0.12.1
+	github.com/sasha-s/go-deadlock v0.3.6
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
+	golang.org/x/time v0.12.0
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
 require (
@@ -33,6 +36,7 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	github.com/nicksnyder/go-i18n/v2 v2.5.1 // indirect
+	github.com/petermattis/goid v0.0.0-20250813065127-a731cc31b4fe // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rogpeppe/go-internal v1.10.0 // indirect
 	github.com/rymdport/portal v0.4.1 // indirect

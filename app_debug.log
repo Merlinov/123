@@ -1,0 +1,2 @@
+# command-line-arguments
+./main.go:79:20: undefined: NewSingleInstance

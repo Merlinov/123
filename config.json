@@ -1,8 +1,9 @@
 {
     "_comment-LogMode": "LogMode: all — логировать всё, errors — только ошибки ",
-    "LogMode": "errors",
+    "LogMode": "all",
     "_comment-ConnString": "для windows авторизации просто trusted_connection=yes",
-    "ConnString": "server=10.211.55.7,1433;database=tec1new;user id=sa;password=VeryStr0ngP@ssw0rd;encrypt=disable",
+    "ConnString": "server=10.211.55.7,1433;database=tec1new;user id=sa;password=VeryStr0ngP@ssw0rd;encrypt=disable",  
+"StartAllOnLaunch": true,
     "DataSources": [
         {
             "Name": "ТГ-4 Минутные",

@@ -1,15 +1,16 @@
 package utils
 
 import (
+	"io"
 	"log"
 	"os"
 )
 
 // InitLogger инициализирует логгер, который пишет в указанный файл
-func InitLogger(logFile string) (*log.Logger, error) {
+func InitLogger(logFile string) (*log.Logger, io.Closer, error) {
 	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return log.New(f, "", log.LstdFlags), nil
+	return log.New(f, "", log.LstdFlags), f, nil
 }
