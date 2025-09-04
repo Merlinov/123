@@ -1,0 +1,3 @@
+@echo off
+cd /d "C:\TEC\DataCollector"
+start "" "TG45DataCollector.exe"
