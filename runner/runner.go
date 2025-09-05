@@ -8,18 +8,23 @@ import (
 	"io"
 	"log"
 	"os"
+	"reflect"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	"tg45/datafile"
-	"tg45/db"
+	tg45db "tg45/db"
+	"tg45/logs"
 	"tg45/model"
-	"tg45/utils"
 )
 
 /*
+формат переодичности парсинга бинарника
 "23s"        // 23 секунды
 "16m"        // 16 минут
 "1h01m01s"   // 1 час 1 минута 1 секунда
@@ -34,13 +39,131 @@ import (
 
 // DataSource описывает один источник данных
 type DataSource struct {
-	Name           string `json:"Name"`           // TG4, TG5, etc
-	DataFileName   string `json:"DataFileName"`   // Tg4.dat, Tg5.dat
-	ParserType     string `json:"ParserType"`     // tg4, tg5
-	LogFileName    string `json:"LogFileName"`    // write_attempts_tg4.log
-	Enabled        bool   `json:"Enabled"`        // включен ли источник
-	Quality        int    `json:"Quality"`        // качество данных
-	UpdateInterval string `json:"UpdateInterval"` //интервал парсинга бинарника
+	Name           string `json:"Name"`                     // TG4, TG5, etc
+	DataFileName   string `json:"DataFileName"`             // Tg4.dat, Tg5.dat
+	ParserType     string `json:"ParserType"`               // tg4, tg5
+	LogFileName    string `json:"LogFileName"`              // write_attempts_tg4.log
+	Enabled        bool   `json:"Enabled"`                  // включен ли источник
+	Quality        int    `json:"Quality"`                  // качество данных
+	UpdateInterval string `json:"UpdateInterval"`           //интервал парсинга бинарника
+	StaleThreshold string `json:"StaleThreshold,omitempty"` // "5m", "70m", "2h"
+}
+
+type DBConnector struct {
+	connString string
+	maxRetries int
+	baseDelay  time.Duration
+	db         *sql.DB
+	logger     *log.Logger
+	mu         sync.Mutex
+	connected  bool
+	stopChan   chan struct{}
+}
+
+func (dbc *DBConnector) IsConnected() bool {
+	dbc.mu.Lock()
+	state := dbc.connected
+	dbc.mu.Unlock()
+	log.Printf("IsConnected called, state=%v", state)
+	return state
+}
+
+func NewDBConnector(connString string, logger *log.Logger) *DBConnector {
+	return &DBConnector{
+		connString: connString,
+		maxRetries: 5,               // первоначальные попытки
+		baseDelay:  2 * time.Second, // базовая задержка
+		logger:     logger,
+		stopChan:   make(chan struct{}),
+	}
+}
+
+// Запуск цикла подключения в фоне
+func (dbc *DBConnector) Start() {
+	go dbc.connectLoop()
+}
+
+// Остановка цикла подключения
+func (dbc *DBConnector) Stop() {
+	close(dbc.stopChan)
+}
+
+func (dbc *DBConnector) connectLoop() {
+	retryCount := 0
+	var db *sql.DB
+	var err error
+
+	for {
+		select {
+		case <-dbc.stopChan:
+			// Перед выходом закроем подключение, если есть
+			dbc.mu.Lock()
+			if dbc.db != nil {
+				_ = dbc.db.Close()
+				dbc.db = nil
+			}
+			dbc.connected = false
+			dbc.mu.Unlock()
+			return
+		default:
+			if db == nil {
+				// Если нет открытого соединения - открываем новое
+				db, err = sql.Open("sqlserver", dbc.connString)
+				if err != nil {
+					dbc.logger.Printf("Ошибка открытия подключения: %v", err)
+					dbc.setConnected(false)
+					delay := dbc.backoffDelay(&retryCount)
+					time.Sleep(delay)
+					continue
+				}
+			}
+
+			// Проверяем доступность базы (ping)
+			err = db.Ping()
+			if err == nil {
+				dbc.setConnected(true)
+				retryCount = 0
+				// Ждем перед следующим пингом (например, 10 сек)
+				time.Sleep(10 * time.Second)
+				continue
+			}
+
+			dbc.logger.Printf("Ошибка пинга базы: %v", err)
+			dbc.setConnected(false)
+
+			// Закрываем текущее соединение, попробуем заново
+			_ = db.Close()
+			db = nil
+
+			delay := dbc.backoffDelay(&retryCount)
+			time.Sleep(delay)
+		}
+	}
+}
+
+func (dbc *DBConnector) backoffDelay(retryCount *int) time.Duration {
+	delay := dbc.baseDelay * time.Duration(1<<(*retryCount))
+	if delay > 1*time.Minute {
+		delay = 1 * time.Minute
+	}
+	if *retryCount < dbc.maxRetries {
+		*retryCount++
+	}
+	return delay
+}
+
+// для безопасности обновления connected с муксом
+func (dbc *DBConnector) setConnected(state bool) {
+	dbc.mu.Lock()
+	defer dbc.mu.Unlock()
+	dbc.connected = state
+}
+
+// Получение текущего подключения
+func (dbc *DBConnector) GetDB() (*sql.DB, bool) {
+	dbc.mu.Lock()
+	defer dbc.mu.Unlock()
+	return dbc.db, dbc.connected
 }
 
 // Config описывает структуру конфигурационного файла
@@ -53,50 +176,54 @@ type Config struct {
 
 // SourceRunner управляет одним источником данных
 type SourceRunner struct {
-	Source         DataSource
-	Logger         *log.Logger
-	Database       *sql.DB
-	StopChan       chan struct{}
-	Running        bool
-	Mutex          sync.Mutex
-	wg             sync.WaitGroup // ← для правильного управления горутинами
-	updateInterval time.Duration  // ← интервал парсинга
+	Source           DataSource
+	Logger           *log.Logger
+	StopChan         chan struct{}
+	Running          bool
+	Mutex            sync.Mutex
+	wg               sync.WaitGroup // ← для правильного управления горутинами
+	updateInterval   time.Duration  // ← интервал парсинга
+	lumberjackLogger *lumberjack.Logger
 
 	restartCount int       // счетчик перезапусков
 	lastError    error     // последняя ошибка
 	lastRestart  time.Time // время последнего перезапуска
 	// Метрики для мониторинга
-	totalProcessed    int64
-	totalErrors       int64
-	lastSuccessTime   time.Time
-	avgProcessingTime time.Duration
-	rateLimiter       *rate.Limiter
-	logFile           io.Closer
-	circuitBreaker    *CircuitBreaker
+	totalProcessed int64
+	totalErrors    int64
+	rateLimiter    *rate.Limiter
+	logFile        io.Closer
+	circuitBreaker *CircuitBreaker
+	// 🔧 НОВЫЕ ПОЛЯ ДЛЯ МОНИТОРИНГА ФАЙЛА
+	fileStaleThreshold time.Duration // Время "устаревания" файла (5 минут)
+	lastFileModTime    time.Time     // Время последнего изменения файла
+	lastSuccessfulRead time.Time     // Время последнего успешного чтения
+	zeroDataWrites     int64         // Счетчик записей нулевых данных
+	LogMode            string
+	DBConnector        *DBConnector
+	Database           *sql.DB // Текущая активная база из DBConnector.GetDB()
 }
 
 func (sr *SourceRunner) GetMetrics() map[string]interface{} {
 	sr.Mutex.Lock()
 	defer sr.Mutex.Unlock()
 
-	// 🔧 СОЗДАЙ DEFENSIVE COPIES
-	metrics := map[string]interface{}{
-		"processed":    sr.totalProcessed,
-		"errors":       sr.totalErrors,
-		"restarts":     sr.restartCount,
-		"last_success": sr.lastSuccessTime, // time.Time копируется по значению
-		"avg_time":     sr.avgProcessingTime,
-		"running":      sr.Running,
+	timeSinceLastFile := time.Duration(0)
+	if !sr.lastFileModTime.IsZero() {
+		timeSinceLastFile = time.Since(sr.lastFileModTime)
 	}
 
-	// 🔧 БЕЗОПАСНАЯ КОПИЯ ERROR
-	if sr.lastError != nil {
-		metrics["last_error"] = sr.lastError.Error() // Копируем string, а не error
-	} else {
-		metrics["last_error"] = nil
+	return map[string]interface{}{
+		"processed":        sr.totalProcessed,
+		"errors":           sr.totalErrors,
+		"restarts":         sr.restartCount,
+		"zero_data_writes": sr.zeroDataWrites, // Счетчик нулевых записей
+		"data_is_fresh":    timeSinceLastFile < sr.fileStaleThreshold,
+		"file_age_minutes": int(timeSinceLastFile.Minutes()),
+		"last_real_data":   sr.lastSuccessfulRead, //  Время последних реальных данных
+		"last_error":       sr.lastError,
+		"running":          sr.Running,
 	}
-
-	return metrics
 }
 
 func NewCircuitBreaker(threshold int, timeout time.Duration) *CircuitBreaker {
@@ -149,30 +276,27 @@ func (cb *CircuitBreaker) CallWithContext(ctx context.Context, fn func() error) 
 
 // NewSourceRunner создает новый runner для источника
 func NewSourceRunner(source DataSource, connString string) (*SourceRunner, error) {
-	// Инициализируем логгер для источника
-	logger, logFile, err := utils.InitLogger(source.LogFileName)
-	if err != nil {
-		return nil, err
+	maxSize := 150
+	l := &lumberjack.Logger{
+		Filename:   source.LogFileName,
+		MaxSize:    maxSize,
+		MaxBackups: 7,
+		MaxAge:     30,
+		Compress:   true,
+	}
+	logger := log.New(l, "", log.LstdFlags|log.Lmicroseconds)
+
+	dbConnector := NewDBConnector(connString, logger)
+	dbConnector.Start() // запускаем асинхронное подключение
+
+	// Опционально: можно подождать короткий таймаут, чтобы DBConnector сделал хотя бы одну попытку
+	time.Sleep(1 * time.Second)
+	database, connected := dbConnector.GetDB()
+	if !connected {
+		logger.Printf("[%s] Предупреждение: база данных пока не подключена, данные появятся после успешного соединения", source.Name)
 	}
 
-	database, err := sql.Open("sqlserver", connString)
-	if err != nil {
-		logFile.Close() // Закрой только при ошибке
-		return nil, err
-	}
-
-	database.SetMaxOpenConns(10)
-	database.SetMaxIdleConns(2)
-	database.SetConnMaxLifetime(5 * time.Minute)
-	database.SetConnMaxIdleTime(2 * time.Minute)
-
-	if err := database.Ping(); err != nil {
-		database.Close()
-		logFile.Close()
-		return nil, fmt.Errorf("не удается подключиться к базе данных: %w", err)
-	}
-
-	// Парсим интервал обновления
+	// Парсинг интервалов и прочее без изменений
 	var updateInterval time.Duration
 	if source.UpdateInterval != "" {
 		parsed, err := time.ParseDuration(source.UpdateInterval)
@@ -186,32 +310,68 @@ func NewSourceRunner(source DataSource, connString string) (*SourceRunner, error
 		updateInterval = 15 * time.Second
 	}
 
-	// 🔧 ДОБАВЬ ВАЛИДАЦИЮ
 	if updateInterval < 1*time.Second {
 		logger.Printf("[%s] UpdateInterval слишком мал (%v), установлен минимум 1s", source.Name, updateInterval)
 		updateInterval = 1 * time.Second
 	}
-
 	if updateInterval > 1*time.Hour {
 		logger.Printf("[%s] UpdateInterval слишком велик (%v), установлен максимум 1h", source.Name, updateInterval)
 		updateInterval = 1 * time.Hour
 	}
 
-	logger.Printf("[%s] Установлен интервал обновления: %v", source.Name, updateInterval)
+	var staleThreshold time.Duration
+	if source.StaleThreshold != "" {
+		parsed, err := time.ParseDuration(source.StaleThreshold)
+		if err != nil {
+			logger.Printf("Ошибка парсинга StaleThreshold '%s': %v", source.StaleThreshold, err)
+		} else {
+			staleThreshold = parsed
+		}
+	}
+	if staleThreshold == 0 {
+		switch source.ParserType {
+		case "tg5_hour":
+			staleThreshold = 70 * time.Minute
+		default:
+			staleThreshold = 5 * time.Minute
+		}
+	}
+
+	logger.Printf("[%s] Установлен интервал обновления: %v, порог устаревания: %v",
+		source.Name, updateInterval, staleThreshold)
+
 	return &SourceRunner{
-		Source:         source,
-		Logger:         logger,
-		Database:       database,
-		logFile:        logFile, // 🔧 Сохрани для закрытия в Close()
-		StopChan:       make(chan struct{}),
-		Running:        false,
-		updateInterval: updateInterval,
-		restartCount:   0,
-		lastError:      nil,
-		lastRestart:    time.Time{},
-		rateLimiter:    rate.NewLimiter(rate.Limit(1), 5),
-		circuitBreaker: NewCircuitBreaker(5, 1*time.Minute),
+		Source:             source,
+		Logger:             logger,
+		DBConnector:        dbConnector,
+		Database:           database,
+		logFile:            l,
+		StopChan:           make(chan struct{}),
+		Running:            false,
+		updateInterval:     updateInterval,
+		restartCount:       0,
+		lastError:          nil,
+		lastRestart:        time.Time{},
+		rateLimiter:        rate.NewLimiter(rate.Limit(1), 5),
+		circuitBreaker:     NewCircuitBreaker(5, 1*time.Minute),
+		lastSuccessfulRead: time.Now(),
+		zeroDataWrites:     0,
+		fileStaleThreshold: staleThreshold,
+		lumberjackLogger:   l,
 	}, nil
+}
+
+func (sr *SourceRunner) LoggerInfo() string {
+	if sr.lumberjackLogger == nil {
+		return "Логгер не инициализировался"
+	}
+	return fmt.Sprintf("Лог файл: %s; MaxSize: %dMB; MaxBackups: %d; MaxAge: %d days; Compress: %v",
+		sr.lumberjackLogger.Filename,
+		sr.lumberjackLogger.MaxSize,
+		sr.lumberjackLogger.MaxBackups,
+		sr.lumberjackLogger.MaxAge,
+		sr.lumberjackLogger.Compress,
+	)
 }
 
 type CircuitBreaker struct {
@@ -222,29 +382,31 @@ type CircuitBreaker struct {
 	mutex        sync.Mutex
 }
 
-func (cb *CircuitBreaker) Call(fn func() error) error {
-	cb.mutex.Lock()
-	defer cb.mutex.Unlock()
+// func (cb *CircuitBreaker) Call(fn func() error) error {
+// 	cb.mutex.Lock()
+// 	defer cb.mutex.Unlock()
 
-	if cb.failures >= cb.threshold {
-		if time.Since(cb.lastFailTime) < cb.timeout {
-			return fmt.Errorf("circuit breaker is open")
-		}
-		cb.failures = 0 // reset
-	}
+// 	if cb.failures >= cb.threshold {
+// 		if time.Since(cb.lastFailTime) < cb.timeout {
+// 			return fmt.Errorf("circuit breaker is open")
+// 		}
+// 		cb.failures = 0 // reset
+// 	}
 
-	err := fn()
-	if err != nil {
-		cb.failures++
-		cb.lastFailTime = time.Now()
-		return err
-	}
+// 	err := fn()
+// 	if err != nil {
+// 		cb.failures++
+// 		cb.lastFailTime = time.Now()
+// 		return err
+// 	}
 
-	cb.failures = 0
-	return nil
-}
+// 	cb.failures = 0
+// 	return nil
+// }
 
 func (sr *SourceRunner) Start(logMode string) {
+	sr.Logger.Printf("[%s] Logger info: %s", sr.Source.Name, sr.LoggerInfo())
+
 	sr.Mutex.Lock()
 	defer sr.Mutex.Unlock()
 
@@ -301,6 +463,44 @@ func (sr *SourceRunner) Start(logMode string) {
 	}
 }
 
+// checkFileHealth проверяет свежесть данных файла
+func (sr *SourceRunner) checkFileHealth() (isFresh bool, err error) {
+	fileInfo, err := os.Stat(sr.Source.DataFileName)
+	if err != nil {
+		return false, fmt.Errorf("файл данных недоступен: %w", err)
+	}
+
+	currentModTime := fileInfo.ModTime()
+	timeSinceUpdate := time.Since(currentModTime)
+
+	// 🔧 ИСПОЛЬЗУЕМ УЖЕ УСТАНОВЛЕННЫЙ ПОРОГ - БЕЗ ДУБЛИРОВАНИЯ
+	if timeSinceUpdate > sr.fileStaleThreshold {
+		sr.Logger.Printf("[%s] ДАННЫЕ УСТАРЕЛИ: файл не обновлялся %v (лимит %v)",
+			sr.Source.Name, timeSinceUpdate, sr.fileStaleThreshold)
+		return false, nil
+	}
+
+	// Данные свежие - обновляем статистику
+	sr.lastFileModTime = currentModTime
+	return true, nil
+}
+
+func connectWithRetry(connString string, maxRetries int, delay time.Duration) (*sql.DB, error) {
+	for i := 0; i <= maxRetries; i++ {
+		db, err := sql.Open("sqlserver", connString)
+		if err == nil {
+			err = db.Ping()
+			if err == nil {
+				return db, nil // Успешное подключение
+			}
+		}
+		if i < maxRetries {
+			time.Sleep(delay)
+		}
+	}
+	return nil, fmt.Errorf("не удалось подключиться к базе после %d попыток", maxRetries)
+}
+
 // Выносим основной цикл в отдельный метод
 func (sr *SourceRunner) runMainLoop(logMode string) {
 	if logMode == "all" {
@@ -346,33 +546,55 @@ func (sr *SourceRunner) processDataWithRetry(logMode string) error {
 		return fmt.Errorf("rate limit exceeded")
 	}
 
-	maxRetries := 3
-	baseDelay := 2 * time.Second
+	// 🔧 ПРОВЕРЯЕМ СВЕЖЕСТЬ ДАННЫХ
+	isFresh, err := sr.checkFileHealth()
+	if err != nil {
+		// Серьезная ошибка доступа к файлу
+		sr.Logger.Printf("[%s] КРИТИЧЕСКАЯ ОШИБКА доступа к файлу: %v", sr.Source.Name, err)
+		return err
+	}
 
-	// 🔧 СОЗДАЙ CONTEXT для всей операции retry
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+
+	if !isFresh {
+		// 🔧 ИСПОЛЬЗУЕМ ФУНКЦИЮ С RETRY ДЛЯ NULL ДАННЫХ
+		return sr.writeZeroDataWithRetry(ctx, logMode)
+	} else {
+		// 🔧 ДАННЫЕ СВЕЖИЕ - ЧИТАЕМ ИЗ ФАЙЛА
+		return sr.processRealDataWithRetry(ctx, logMode)
+	}
+}
+
+// processRealDataWithRetry читает и обрабатывает реальные данные из файла
+func (sr *SourceRunner) processRealDataWithRetry(ctx context.Context, logMode string) error {
+	maxRetries := 3
+	baseDelay := 2 * time.Second
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		err := sr.processDataWithContext(ctx, logMode)
 		if err == nil {
-			return nil // Успех!
+			// 🔧 ОБНОВЛЯЕМ ВРЕМЯ УСПЕШНОГО ЧТЕНИЯ РЕАЛЬНЫХ ДАННЫХ
+			sr.Mutex.Lock()
+			sr.lastSuccessfulRead = time.Now()
+			sr.totalProcessed++
+			sr.Mutex.Unlock()
+			return nil
 		}
 
 		if attempt == maxRetries {
+			// 🔧 ОБНОВЛЯЕМ СЧЕТЧИК ОШИБОК
+			sr.Mutex.Lock()
+			sr.totalErrors++ // ← ДОБАВЬ ЭТО
+			sr.Mutex.Unlock()
 			return fmt.Errorf("превышено количество попыток (%d): %w", maxRetries, err)
 		}
 
-		delay := baseDelay * time.Duration(1<<attempt) // 2s, 4s, 8s
-		if logMode == "all" || attempt == maxRetries-1 {
-			sr.Logger.Printf("[%s] Попытка %d/%d не удалась: %v. Повтор через %v",
-				sr.Source.Name, attempt+1, maxRetries, err, delay)
-		}
-
+		delay := baseDelay * time.Duration(1<<attempt)
 		select {
 		case <-sr.StopChan:
 			return fmt.Errorf("остановлен во время retry")
-		case <-ctx.Done(): // 🔧 ДОБАВЬ ПРОВЕРКУ CONTEXT
+		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(delay):
 			// continue retry
@@ -381,6 +603,223 @@ func (sr *SourceRunner) processDataWithRetry(logMode string) error {
 	return nil
 }
 
+// writeZeroData записывает NULL значения в БД с timestamp из файла (передача отключена)
+func (sr *SourceRunner) writeZeroData(ctx context.Context, logMode string) error {
+	sr.Logger.Printf("[%s] ПЕРЕДАЧА ОТКЛЮЧЕНА - пишем NULL значения с timestamp из файла", sr.Source.Name)
+
+	// 🔧 ЧИТАЕМ TIMESTAMP ИЗ ФАЙЛА (ДАЖЕ ЕСЛИ ОН СТАРЫЙ)
+	timeStampFile, err := sr.readTimestampFromFile()
+	if err != nil {
+		// Если не можем прочитать timestamp - используем время последнего изменения файла
+		fileInfo, statErr := os.Stat(sr.Source.DataFileName)
+		if statErr != nil {
+			return fmt.Errorf("не удается получить timestamp: %w", err)
+		}
+		timeStampFile = fileInfo.ModTime()
+		sr.Logger.Printf("[%s] Используем время изменения файла как timestamp: %v", sr.Source.Name, timeStampFile)
+	}
+
+	timeStampSystem := time.Now() // Системное время записи в БД
+	zeroQuality := 0              // Качество 0 = "нет данных"
+
+	// 🔧 ПИШЕМ NULL С ПРАВИЛЬНЫМ TIMESTAMP
+	err = sr.writeNullFieldsToDBWithTimestamp(ctx, timeStampSystem, timeStampFile, zeroQuality, logMode)
+
+	if err == nil {
+		// 🔧 УВЕЛИЧИВАЕМ СЧЕТЧИК NULL ЗАПИСЕЙ
+		sr.Mutex.Lock()
+		sr.zeroDataWrites++
+		sr.Mutex.Unlock()
+
+		if logMode == "all" {
+			sr.Logger.Printf("[%s] Записаны NULL значения с timestamp из файла: %v", sr.Source.Name, timeStampFile)
+		}
+	}
+
+	return err
+}
+
+func (sr *SourceRunner) writeZeroDataWithRetry(ctx context.Context, logMode string) error {
+	maxRetries := 3
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		err := sr.writeZeroData(ctx, logMode)
+		if err == nil || !isDeadlockError(err) {
+			return err
+		}
+		if attempt < maxRetries {
+			time.Sleep(time.Duration(50*(attempt+1)) * time.Millisecond)
+		}
+	}
+	// 🔧 ИСПРАВЛЕНО: нужно вернуть ошибку если все попытки исчерпаны
+	return fmt.Errorf("writeZeroData failed after %d attempts", maxRetries+1)
+}
+
+// isDeadlockError проверяет, является ли ошибка deadlock
+func isDeadlockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "was deadlocked") ||
+		strings.Contains(errStr, "deadlock victim") ||
+		strings.Contains(errStr, "transaction (process id")
+}
+
+// readTimestampFromFile читает timestamp из бинарного файла в зависимости от типа парсера
+func (sr *SourceRunner) readTimestampFromFile() (time.Time, error) {
+	switch sr.Source.ParserType {
+	case "tg4":
+		data, err := datafile.ReadData[model.Data_TG4](sr.Source.DataFileName)
+		if err != nil {
+			return time.Time{}, err
+		}
+		return time.Date(
+			int(data.Fltv180Offs360),             // год
+			time.Month(int(data.Fltv181Offs364)), // месяц
+			int(data.Fltv182Offs368),             // день
+			int(data.Fltv177Offs348),             // час
+			int(data.Fltv178Offs352),             // минута
+			int(data.Fltv179Offs356),             // секунда
+			0, time.UTC,
+		), nil
+
+	case "tg5":
+		data, err := datafile.ReadData[model.Data_TG5_Minute](sr.Source.DataFileName)
+		if err != nil {
+			return time.Time{}, err
+		}
+		return time.Date(
+			int(data.Fltv105Offs447),             // год
+			time.Month(int(data.Fltv106Offs451)), // месяц
+			int(data.Fltv107Offs455),             // день
+			int(data.Fltv102Offs434),             // час
+			int(data.Fltv103Offs438),             // минута
+			int(data.Fltv104Offs442),             // секунда
+			0, time.UTC,
+		), nil
+
+	case "tg5_hour":
+		data, err := datafile.ReadData[model.Data_TG5_Hour](sr.Source.DataFileName)
+		if err != nil {
+			return time.Time{}, err
+		}
+		return time.Date(
+			int(data.Fltv105Offs447),             // год
+			time.Month(int(data.Fltv106Offs451)), // месяц
+			int(data.Fltv107Offs455),             // день
+			int(data.Fltv102Offs434),             // час
+			int(data.Fltv103Offs438),             // минута
+			int(data.Fltv104Offs442),             // секунда
+			0, time.UTC,
+		), nil
+
+	default:
+		return time.Time{}, fmt.Errorf("неизвестный тип парсера: %s", sr.Source.ParserType)
+	}
+}
+
+// writeNullFieldsToDBWithTimestamp записывает NULL в БД с правильным timestamp
+func (sr *SourceRunner) writeNullFieldsToDBWithTimestamp(ctx context.Context, timeStampSystem, timeStampFile time.Time, quality int, logMode string) error {
+	// 🔧 ПОЛУЧАЕМ СПИСОК IDTAG ИЗ СТРУКТУРЫ ДАННЫХ
+	var idTags []string
+
+	switch sr.Source.ParserType {
+	case "tg4":
+		idTags = sr.getIdTagsFromStruct(model.Data_TG4{})
+	case "tg5":
+		idTags = sr.getIdTagsFromStruct(model.Data_TG5_Minute{})
+	case "tg5_hour":
+		idTags = sr.getIdTagsFromStruct(model.Data_TG5_Hour{})
+	default:
+		return fmt.Errorf("неизвестный тип парсера: %s", sr.Source.ParserType)
+	}
+
+	// 🔧 ЗАПИСЫВАЕМ NULL С ПРАВИЛЬНЫМ TIMESTAMP
+	return sr.saveNullDataToDB(ctx, idTags, timeStampSystem, timeStampFile, quality, logMode)
+}
+
+// getIdTagsFromStruct извлекает все IdTag из структуры данных
+func (sr *SourceRunner) getIdTagsFromStruct(dataStruct interface{}) []string {
+	var idTags []string
+	t := reflect.TypeOf(dataStruct)
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if field.Type.Kind() == reflect.Float32 {
+			idTag := field.Tag.Get("idTag")
+			if idTag != "" {
+				idTags = append(idTags, idTag)
+			}
+		}
+	}
+
+	// Сортируем для предотвращения deadlock
+	sort.Strings(idTags)
+	return idTags
+}
+
+// saveNullDataToDB выполняет UPSERT для каждого IdTag с NULL значениями
+func (sr *SourceRunner) saveNullDataToDB(ctx context.Context, idTags []string, timeStampSystem, timeStampFile time.Time, quality int, logMode string) error {
+	db, connected := sr.DBConnector.GetDB()
+	if !connected || db == nil {
+		return fmt.Errorf("база данных не подключена")
+	}
+
+	var dataTable string
+	switch sr.Source.ParserType {
+	case "tg4":
+		dataTable = "ByMinutes"
+	case "tg5":
+		dataTable = "ByMinutes"
+	case "tg5_hour":
+		dataTable = "ByHours"
+	default:
+		dataTable = "ByMinutes"
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("ошибка создания транзакции: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	successCount := 0
+	for _, idTag := range idTags {
+		nullValue := sql.NullFloat64{Valid: false}
+
+		archiveQuery := fmt.Sprintf(`
+MERGE %s AS target
+USING (VALUES (@p1, @p2)) AS source (IdTag, TimeStamp)
+ON target.IdTag = source.IdTag AND target.TimeStamp = source.TimeStamp
+WHEN NOT MATCHED THEN 
+    INSERT (IdTag, TimeStamp, Value, Quality, timeStampSystem)
+    VALUES (@p1, @p2, @p3, @p4, @p5);`, dataTable)
+
+		_, err = tx.ExecContext(ctx, archiveQuery,
+			idTag, timeStampFile, nullValue, quality, timeStampSystem)
+		if err != nil {
+			logs.LogWriteAttempt(sr.Logger, idTag, fmt.Sprintf("%s_NULL_UPSERT_FAIL", dataTable), err, logMode)
+		} else {
+			logs.LogWriteAttempt(sr.Logger, idTag, fmt.Sprintf("%s_NULL_UPSERT_SUCCESS", dataTable), nil, logMode)
+		}
+		successCount++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("ошибка коммита транзакции: %w", err)
+	}
+
+	if logMode == "all" {
+		sr.Logger.Printf("[%s] Записано %d NULL значений в %s", sr.Source.Name, successCount, dataTable)
+	}
+	return nil
+}
+
+// processData обрабатывает данные из файла по типу парсера
 func (sr *SourceRunner) processDataWithContext(ctx context.Context, logMode string) error {
 	switch sr.Source.ParserType {
 	case "tg4":
@@ -417,26 +856,13 @@ func (sr *SourceRunner) IsRunning() bool {
 	return sr.Running
 }
 
-// processData обрабатывает данные из файла по типу парсера
-func (sr *SourceRunner) processData(logMode string) error {
-	// Создаем context для DB операций
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	switch sr.Source.ParserType {
-	case "tg4":
-		return sr.processTG4Data(ctx, logMode)
-	case "tg5":
-		return sr.processTG5Data(ctx, logMode)
-	case "tg5_hour":
-		return sr.processTG5HourData(ctx, logMode)
-	default:
-		return fmt.Errorf("неизвестный тип парсера: %s", sr.Source.ParserType)
-	}
-}
-
 // processTG4Data обрабатывает данные от TG4 с использованием generic ReadData
 func (sr *SourceRunner) processTG4Data(ctx context.Context, logMode string) error {
+	db, connected := sr.DBConnector.GetDB()
+	if !connected || db == nil {
+		return fmt.Errorf("база данных не подключена")
+	}
+
 	data, err := datafile.ReadData[model.Data_TG4](sr.Source.DataFileName)
 	if err != nil {
 		return err
@@ -453,12 +879,16 @@ func (sr *SourceRunner) processTG4Data(ctx context.Context, logMode string) erro
 		0, time.UTC,
 	)
 
-	// 🔧 ИСПОЛЬЗУЕМ CONTEXT версию
-	return db.SaveCurrentValuesContext(ctx, sr.Database, data, timeStampSystem, timeStampFile, sr.Source.Quality, sr.Logger, logMode)
+	return tg45db.SaveCurrentValuesContext(ctx, db, data, timeStampSystem, timeStampFile, sr.Source.Quality, sr.Logger, logMode)
 }
 
 // АНАЛОГИЧНО для processTG5Data
 func (sr *SourceRunner) processTG5Data(ctx context.Context, logMode string) error {
+	db, connected := sr.DBConnector.GetDB()
+	if !connected || db == nil {
+		return fmt.Errorf("база данных не подключена")
+	}
+
 	data, err := datafile.ReadData[model.Data_TG5_Minute](sr.Source.DataFileName)
 	if err != nil {
 		return err
@@ -475,12 +905,18 @@ func (sr *SourceRunner) processTG5Data(ctx context.Context, logMode string) erro
 		0, time.UTC,
 	)
 
-	return db.SaveCurrentValuesContext(ctx, sr.Database, data, timeStampSystem, timeStampFile, sr.Source.Quality, sr.Logger, logMode)
+	return tg45db.SaveCurrentValuesContext(ctx, db, data, timeStampSystem, timeStampFile, sr.Source.Quality, sr.Logger, logMode)
+
 }
 
 // Новый метод для часовых данных TG5
 // АНАЛОГИЧНО для processTG5HourData
 func (sr *SourceRunner) processTG5HourData(ctx context.Context, logMode string) error {
+	db, connected := sr.DBConnector.GetDB()
+	if !connected || db == nil {
+		return fmt.Errorf("база данных не подключена")
+	}
+
 	data, err := datafile.ReadData[model.Data_TG5_Hour](sr.Source.DataFileName)
 	if err != nil {
 		return err
@@ -497,27 +933,26 @@ func (sr *SourceRunner) processTG5HourData(ctx context.Context, logMode string) 
 		0, time.UTC,
 	)
 
-	return db.SaveCurrentValuesContext(ctx, sr.Database, data, timeStampSystem, timeStampFile, sr.Source.Quality, sr.Logger, logMode)
+	return tg45db.SaveCurrentValuesContext(ctx, db, data, timeStampSystem, timeStampFile, sr.Source.Quality, sr.Logger, logMode)
+
 }
 
 // Close закрывает соединения
 func (sr *SourceRunner) Close() error {
 	sr.Stop()
-
-	var errs []error
-
+	if sr.DBConnector != nil {
+		sr.DBConnector.Stop()
+	}
 	if sr.logFile != nil {
 		if err := sr.logFile.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("log file close: %w", err))
+			return fmt.Errorf("log file close: %w", err)
 		}
 	}
-
-	if err := sr.Database.Close(); err != nil {
-		errs = append(errs, fmt.Errorf("database close: %w", err))
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("close errors: %v", errs)
+	db, connected := sr.DBConnector.GetDB()
+	if connected && db != nil {
+		if err := db.Close(); err != nil {
+			return fmt.Errorf("database close: %w", err)
+		}
 	}
 	return nil
 }

@@ -6,7 +6,6 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// Добавь в installer/registry.go
 func AddToStartup() error {
 	key, err := registry.OpenKey(registry.CURRENT_USER,
 		`SOFTWARE\Microsoft\Windows\CurrentVersion\Run`, registry.SET_VALUE)

@@ -65,10 +65,12 @@ type AppManager struct {
 	startTime            time.Time
 	healthMetrics        *HealthMetrics
 	appLogger            *log.Logger
+	statusDBBtn          *widget.Button
 }
 
 func main() {
 	// Проверяем единственность экземпляра (почему то 2 висит)
+
 	singleInstance := NewSingleInstance("TG45DataCollector")
 	locked, err := singleInstance.Lock()
 	if err != nil || !locked {
@@ -100,7 +102,7 @@ func main() {
 		<-sigChan
 		log.Println("Получен сигнал завершения...")
 		os.Exit(0) // defer выполнится автоматически
-	}()пон
+	}()
 
 	myApp := app.New()
 	myWindow := myApp.NewWindow(AppTitle)
@@ -266,13 +268,6 @@ func (am *AppManager) showStatusDialog() {
 	dialog.ShowInformation("Статус системы", status, am.myWindow)
 }
 
-func (am *AppManager) getSafeLogMode() string {
-	am.mutex.RLock()
-	logMode := am.cfg.LogMode
-	am.mutex.RUnlock()
-	return logMode
-}
-
 // В shutdown:
 func (am *AppManager) shutdown() {
 	am.logToApp("Начинаем shutdown...")
@@ -363,12 +358,53 @@ func (am *AppManager) initializeUI() {
 	am.editConfigButton = widget.NewButton("Изменить конфиг", func() {
 		am.showConfigEditor()
 	})
+	am.statusDBBtn = widget.NewButton("Статус подключения к БД", func() {
+		am.showDBStatusDialog()
+	})
 
-	configButtons := container.NewHBox(am.reloadButton, am.editConfigButton)
+	configButtons := container.NewHBox(am.reloadButton, am.editConfigButton, am.statusDBBtn)
 	am.content.Add(configButtons)
 	am.content.Add(widget.NewSeparator())
 
 	am.myWindow.SetContent(container.NewVScroll(am.content))
+}
+
+func (am *AppManager) showDBStatusDialog() {
+	status := "Статус подключения к базе:\n\n"
+
+	runners := am.sourceManager.GetRunners()
+	for _, r := range runners {
+		dbConnected := false
+		if r.DBConnector != nil {
+			dbConnected = r.DBConnector.IsConnected()
+		}
+		statusText := "Отключено"
+		if dbConnected {
+			statusText = "Подключено"
+		}
+		status += fmt.Sprintf("%s: %s\n", r.Source.Name, statusText)
+	}
+
+	dialog.ShowInformation("Статус подключения к базе", status, am.myWindow)
+}
+
+func (am *AppManager) updateDBStatusButton() {
+	runners := am.sourceManager.GetRunners()
+	// statusReport := ""
+	connectedCount := 0
+	total := len(runners)
+
+	for _, r := range runners {
+		isConnected := r.DBConnector != nil && r.DBConnector.IsConnected()
+		if isConnected {
+			connectedCount++
+		}
+	}
+
+	statusText := fmt.Sprintf("БД: %d/%d подключено", connectedCount, total)
+	fyne.Do(func() {
+		am.statusDBBtn.SetText(statusText)
+	})
 }
 
 // reloadConfig перезагружает конфигурацию и обновляет UI
@@ -427,6 +463,7 @@ func (am *AppManager) reloadConfig() {
 	// Обновляем UI
 	am.updateSourcesUI()
 	am.startHealthMonitoring()
+	am.updateDBStatusButton()
 
 	// Восстанавливаем состояния
 	runners := am.sourceManager.GetRunners()
@@ -452,6 +489,27 @@ func (am *AppManager) startHealthMonitoring() {
 	am.healthMonitorRunning = true
 	am.healthTicker = time.NewTicker(30 * time.Second)
 
+	// Обновляем кнопку сразу в UI-потоке
+	fyne.Do(func() {
+		am.updateDBStatusButton()
+	})
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-am.ctx.Done():
+				return
+			case <-ticker.C:
+				fyne.Do(func() {
+					am.updateDBStatusButton()
+				})
+			}
+		}
+	}()
+
 	go func() {
 		defer func() {
 			am.healthMonitorRunning = false
@@ -463,7 +521,7 @@ func (am *AppManager) startHealthMonitoring() {
 
 		for {
 			select {
-			case <-am.ctx.Done(): // ДОБАВЬ проверку контекста
+			case <-am.ctx.Done():
 				am.appLogger.Println("HealthMonitoring: получен сигнал остановки")
 				return
 			case <-am.healthTicker.C:
@@ -598,6 +656,7 @@ func (am *AppManager) updateSourcesUI() {
 					dialog.ShowError(err, am.myWindow)
 				}
 			})
+
 			gridContainer.Add(logBtn)
 		}
 
@@ -616,8 +675,14 @@ func (am *AppManager) updateSourcesUI() {
 			// ДОБАВЬ обновление цветов после массовых операций
 			am.updateAllButtonColors()
 		})
+		openAppLogBtn := widget.NewButton("Основной лог", func() {
+			err := open.Run("app.log")
+			if err != nil {
+				dialog.ShowError(err, am.myWindow)
+			}
+		})
 
-		generalControls := container.NewHBox(startAllButton, stopAllButton)
+		generalControls := container.NewHBox(startAllButton, stopAllButton, openAppLogBtn)
 		am.content.Add(generalControls)
 
 		am.content.Add(widget.NewSeparator())
@@ -739,6 +804,11 @@ type HealthMetrics struct {
 func (am *AppManager) logCriticalEvent(message string) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	criticalLog := fmt.Sprintf("[CRITICAL] %s: %s\n", timestamp, message)
+
+	// Запись в общий app.log
+	if am.appLogger != nil {
+		am.appLogger.Println(criticalLog)
+	}
 
 	f, err := os.OpenFile("critical.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {

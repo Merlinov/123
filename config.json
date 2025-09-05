@@ -1,6 +1,6 @@
 {
     "_comment-LogMode": "LogMode: all — логировать всё, errors — только ошибки ",
-    "LogMode": "all",
+    "LogMode": "errors",
     "_comment-ConnString": "для windows авторизации просто trusted_connection=yes",
     "ConnString": "server=10.211.55.7,1433;database=tec1new;user id=sa;password=VeryStr0ngP@ssw0rd;encrypt=disable",  
 "StartAllOnLaunch": true,
@@ -11,7 +11,8 @@
             "ParserType": "tg4",
             "LogFileName": "C:/Mac/Home/Documents/code/вв/write_attempts_tg4.log",
             "Enabled": true,
-"UpdateInterval": "15s"
+"UpdateInterval": "15s",
+"StaleThreshold": "5m"
         },
 {
     "Name": "ТГ-5 Минутные",
@@ -19,7 +20,8 @@
     "ParserType": "tg5",
 "LogFileName": "C:/Mac/Home/Documents/code/вв/write_attempts_tg5_minute.log",
             "Enabled": true,
-"UpdateInterval": "15s"
+"UpdateInterval": "15s",
+"StaleThreshold": "5m"
 },
 {
     "Name": "ТГ-5 Часовые", 
@@ -27,7 +29,8 @@
     "ParserType": "tg5_hour",
 "LogFileName": "C:/Mac/Home/Documents/code/вв/write_attempts_tg5_hour.log",
             "Enabled": true,
-"UpdateInterval": "5m"
+"UpdateInterval": "5m",
+ "StaleThreshold": "80m"
 }
     ]
 }
